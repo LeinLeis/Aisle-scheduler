@@ -248,6 +248,9 @@
     zones.forEach(z => { targets[z.id] = targetGroupSize(z, settings); });
     const remaining = {};
     zones.forEach(z => {
+      // Dairy/Frozen are fully handled by assignFixedDepartments before
+      // this function ever runs. Juice competes here like any grocery
+      // zone — see the baseline-first pass below.
       remaining[z.id] = z.department === "dairy" || z.department === "frozen" ? 0 : targets[z.id];
     });
     const assignedIds = new Set();
@@ -386,9 +389,52 @@
       }
     }
 
-    const ordered = zones
-      .filter(z => z.department !== "dairy" && z.department !== "frozen")
-      .sort((a, b) => compareArrays([a.department === "grocery" ? 0 : 1, -targets[a.id]], [b.department === "grocery" ? 0 : 1, -targets[b.id]]));
+    const competing = zones.filter(z => z.department !== "dairy" && z.department !== "frozen");
+
+    // ---------------------------------------------------------------------
+    // Baseline pass — every competing zone (grocery + Juice) gets its first
+    // 2 people before any zone is allowed to grow past 2. One seat at a
+    // time, round-robin across zones, rather than fully draining the pool
+    // into the heaviest zone before the next one gets a look — that
+    // ordering is exactly what let a zone at the back of the queue (Juice,
+    // on a heavy night) end up with nobody at all. Round-robin means a
+    // pool shortfall lands as "a few zones one short of their pair"
+    // instead of "whoever's last in line gets zero."
+    // ---------------------------------------------------------------------
+    const BASELINE_HEADCOUNT = 2;
+    let stillNeedsBaseline = true;
+    while (stillNeedsBaseline) {
+      stillNeedsBaseline = false;
+      for (const zone of competing) {
+        const group = groupFor(zone.id);
+        if (group.length >= BASELINE_HEADCOUNT || remaining[zone.id] <= 0) continue;
+        const rawLeftover = pool.filter(w => !assignedIds.has(w.id));
+        const leftover = filterCompatible(rawLeftover, group);
+        if (!leftover.length) continue;
+        leftover.sort((a, b) => compareArrays(candidateScore(a, zone, group), candidateScore(b, zone, group)));
+        const pick = leftover[0];
+        const assignment = assignments[zone.id];
+        if (pick.preferredZones.length && !pick.preferredZones.includes(zone.id)) {
+          addFlag(assignment, "preference_override");
+        }
+        assignment.workerIds.push(pick.id);
+        assignedIds.add(pick.id);
+        group.push(pick);
+        remaining[zone.id] -= 1;
+        stillNeedsBaseline = true;
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Grow pass — with every zone's baseline settled (or the pool
+    // exhausted trying), whatever's left of the crew goes to whichever
+    // zones still need more to reach their real case-driven target,
+    // heaviest need first. This is the same priority order as before; it
+    // just no longer runs BEFORE zones have their minimum coverage.
+    // ---------------------------------------------------------------------
+    const ordered = [...competing].sort((a, b) =>
+      compareArrays([a.department === "grocery" ? 0 : 1, -targets[a.id]], [b.department === "grocery" ? 0 : 1, -targets[b.id]])
+    );
 
     for (const zone of ordered) {
       const assignment = assignments[zone.id];
@@ -622,24 +668,21 @@
     for (const zone of leftover) {
       let candidates = Object.entries(assignments).filter(([zid, a]) => a.workerIds.length && zid !== zone.id && donorZoneIds.has(zid));
 
-      // Juice always carries roughly an extra hour of restocking that never
-      // shows up in a case count (water gallons in Infants and in the
-      // juice aisle itself, off the daily truck) — so a juice worker's real
-      // total is already close to the ceiling before they touch anything
-      // else. Whichever side of this pairing juice is on — a juice worker
-      // being lent out to cover a leftover zone, or juice itself being the
-      // leftover zone getting staffed by someone else's group — only allow
-      // it if the combined total stays under the hard cap. Otherwise this
-      // isn't "very light," so skip the candidate and let a real one win.
-      if (zone.department === "juice" || candidates.some(([zid]) => zoneById[zid].department === "juice")) {
-        candidates = candidates.filter(([zid, a]) => {
-          const donorZone = zoneById[zid];
-          if (zone.department !== "juice" && donorZone.department !== "juice") return true;
-          const group = a.workerIds.map(wid => workersById[wid]);
-          const newHours = workloadHoursFor(zone, group, settings);
-          return group.every(w => w.hoursAssignedTonight + newHours <= settings.juiceMaxTotalHours);
-        });
-      }
+      // Doubling someone up onto a second, leftover zone should never be
+      // an unlimited blank check on their night — cap it everywhere, not
+      // just for Juice. Juice gets the tighter cap specifically: it always
+      // carries roughly an extra hour of restocking that never shows up in
+      // a case count (water gallons in Infants and in the juice aisle
+      // itself, off the daily truck), so a juice worker's real total is
+      // already close to the ceiling before they touch anything else.
+      candidates = candidates.filter(([zid, a]) => {
+        const donorZone = zoneById[zid];
+        const involvesJuice = zone.department === "juice" || donorZone.department === "juice";
+        const cap = involvesJuice ? settings.juiceMaxTotalHours : settings.maxZoneHoursPerWorker;
+        const group = a.workerIds.map(wid => workersById[wid]);
+        const newHours = workloadHoursFor(zone, group, settings);
+        return group.every(w => w.hoursAssignedTonight + newHours <= cap);
+      });
       if (!candidates.length) continue;
 
       function groupLoad(a) {
@@ -816,6 +859,15 @@
   // ---------------------------------------------------------------------
   // Step 0.5 — fixed departments (Dairy, Frozen)
   // ---------------------------------------------------------------------
+  // Dairy and Frozen have real dedicated/rotation-pool specialists, so they
+  // get a guaranteed-headcount pass before anyone else touches the pool.
+  // Juice does NOT get special-cased here — it has no dedicated-specialist
+  // concept, and singling it out here just relocates the starvation risk
+  // instead of fixing it (a grocery zone at the back of the fill queue is
+  // exposed to the exact same "heaviest zones eat the whole crew" problem).
+  // Juice competes fairly for the pool in fillZones's baseline-first pass
+  // instead — see the comment there.
+  // ---------------------------------------------------------------------
   function todayRotationKey() {
     return Math.floor(Date.now() / 86400000);
   }
@@ -834,7 +886,8 @@
     const ratingOrder = { on_pace: 0, needs_improvement: 1, new: 2 };
 
     for (const zone of zones) {
-      if (zone.estimationMethod !== "fixed_duration" || (zone.department !== "dairy" && zone.department !== "frozen")) continue;
+      const isGuaranteed = zone.department === "dairy" || zone.department === "frozen";
+      if (zone.estimationMethod !== "fixed_duration" || !isGuaranteed) continue;
 
       const dedicated = pool.filter(w => w.fixedDepartment === zone.department);
       const target = targetGroupSize(zone, settings);
@@ -848,9 +901,21 @@
       let backfilled = false;
       if (group.length < target) {
         const alreadyIn = new Set(group.map(w => w.id));
+        // Anyone who explicitly prefers this zone gets first claim on the
+        // backfill seats. Otherwise, someone with NO stated zone
+        // preference at all is preferred over someone who asked for a
+        // DIFFERENT zone (e.g. Juice) — this runs before fillZones ever
+        // gets to honor that other preference, so without this check a
+        // worker who explicitly wants Juice could get swept into Dairy's
+        // generic backfill purely on an alphabetical id tiebreak, and
+        // never get the zone they actually asked for. Rating breaks ties
+        // after that.
         const backfillPool = pool
           .filter(w => !alreadyIn.has(w.id) && !w.fixedDepartment && !w.departmentRotationPool)
-          .sort((a, b) => compareArrays([ratingOrder[a.productionRating], a.id], [ratingOrder[b.productionRating], b.id]));
+          .sort((a, b) => compareArrays(
+            [zonePrefRank(a, zone.id), a.preferredZones.length ? 1 : 0, ratingOrder[a.productionRating], a.id],
+            [zonePrefRank(b, zone.id), b.preferredZones.length ? 1 : 0, ratingOrder[b.productionRating], b.id]
+          ));
         const picked = backfillPool.slice(0, target - group.length);
         if (picked.length) {
           backfilled = true;
@@ -919,6 +984,21 @@
       } else if (a.flags.includes("fixed_department_backfill")) {
         const names = a.workerIds.map(wid => workersById[wid].name).join(", ");
         notes.push(`${zoneLabel(zone)} needed help from the general pool tonight to hit its usual headcount: ${names}.`);
+      }
+    }
+
+    // Grocery/Juice zones don't get the same dedicated note above (their
+    // headcount target moves with the case count, so "short of target" is
+    // normal on some nights, not worth a note every time) — but a zone
+    // left at literal zero is never normal, and on a badly short-staffed
+    // night the baseline-first fill and the leftover-stacking hour cap can
+    // both legitimately end with a zone uncovered. That should never be
+    // silent just because it isn't Dairy or Frozen.
+    for (const [zid, a] of Object.entries(assignments)) {
+      const zone = zoneById[zid];
+      if (zone.department === "dairy" || zone.department === "frozen") continue;
+      if (!a.workerIds.length) {
+        notes.push(`${zoneLabel(zone)} has nobody assigned tonight — not enough crew to cover it without pushing someone over the hour cap.`);
       }
     }
 
