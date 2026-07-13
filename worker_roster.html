@@ -327,11 +327,16 @@
     <div class="modal">
       <h2>Import Names from Photo</h2>
       <div class="modal-sub">
-        Take a photo of a printed or handwritten roster sheet, or pick one from your gallery. This only reads names — ratings, partners, and everything else still need to be set per-worker afterward. Runs entirely on your device; nothing is uploaded anywhere.
+        This only reads names — ratings, partners, and everything else still need to be set per-worker afterward. Runs entirely on your device; nothing is uploaded anywhere. Works best with a clear, well-lit, straight-on photo of printed text — handwriting and blurry/angled shots read a lot worse, so double-check the review list below carefully either way.
       </div>
 
       <div class="field">
-        <input type="file" id="photoFileInput" accept="image/*">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" id="btnTakePhoto">📷 Take Photo</button>
+          <button type="button" id="btnChooseFromLibrary">🖼️ Choose from Library</button>
+        </div>
+        <input type="file" id="photoFileInputCamera" accept="image/*" capture="environment" style="display:none;">
+        <input type="file" id="photoFileInputLibrary" accept="image/*" style="display:none;">
       </div>
 
       <div id="photoStatus" class="hint" style="display:none; margin-bottom:12px;"></div>
@@ -778,12 +783,84 @@ function loadTesseract() {
   return tesseractLoadPromise;
 }
 
+// Normalizes a phone photo before OCR: draws it to a canvas (which sidesteps
+// HEIC/orientation quirks by re-encoding through the browser's own image
+// decoder), downscales oversized photos to a sane max dimension, and
+// converts to grayscale. Tesseract does noticeably better on a normalized,
+// reasonably-sized grayscale image than on a raw multi-megapixel color
+// phone photo — this is the single biggest lever for the "gibberish"
+// results default settings produce.
+function preprocessImageForOCR(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        const maxDim = 1800;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = maxDim / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const d = imageData.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          d[i] = d[i + 1] = d[i + 2] = gray;
+        }
+        ctx.putImageData(imageData, 0, 0);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Couldn't process that photo.")), "image/jpeg", 0.92);
+      } catch (err) {
+        URL.revokeObjectURL(url);
+        reject(err);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Couldn't open that photo — try a different one (some phones save in a format the browser can't read; a regular JPEG works best)."));
+    };
+    img.src = url;
+  });
+}
+
+// Runs OCR via a dedicated worker (instead of the one-shot Tesseract.recognize
+// helper) so we can set an explicit page-segmentation mode. Default mode
+// tries to detect a full page layout (columns, headings, etc.), which is
+// the wrong assumption for a simple list of names and is a common cause of
+// scrambled output. PSM 6 ("assume a single uniform block of text") reads a
+// plain list much more reliably.
+async function runNameOCR(file, onProgress) {
+  const image = await preprocessImageForOCR(file);
+  const worker = await window.Tesseract.createWorker("eng", 1, {
+    logger: m => {
+      if (m.status === "recognizing text" && typeof m.progress === "number") onProgress(m.progress);
+    },
+  });
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: "6" });
+    const { data } = await worker.recognize(image);
+    return data.text || "";
+  } finally {
+    await worker.terminate();
+  }
+}
+
 // Splits raw OCR text into name candidates: one per line, list-marker
 // prefixes stripped, blank/too-short/no-letters lines dropped (those are
 // almost always OCR noise, not names). Deliberately permissive otherwise —
-// this feeds a checklist the person reviews, not a direct write.
+// this feeds a checklist the person reviews, not a direct write. Exact
+// repeats (same name read twice, case/whitespace-insensitive — a common
+// OCR artifact on a single photo) are collapsed to one line rather than
+// shown as separate candidates.
 function extractNameCandidatesFromOCRText(rawText) {
-  return rawText
+  const lines = rawText
     .split(/\r?\n/)
     .map(line => line.trim())
     .map(line => line.replace(/^[\-\*•\d]+[\.\)]?\s*/, ""))
@@ -794,6 +871,13 @@ function extractNameCandidatesFromOCRText(rawText) {
       if (!/[A-Za-z]/.test(line)) return false;
       return true;
     });
+  const seen = new Set();
+  return lines.filter(line => {
+    const key = line.toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function renderNameReviewList(names) {
@@ -820,7 +904,8 @@ function closePhotoModal() {
   document.getElementById("photoStatus").style.display = "none";
   document.getElementById("photoReviewWrap").style.display = "none";
   document.getElementById("btnPhotoAdd").style.display = "none";
-  document.getElementById("photoFileInput").value = "";
+  document.getElementById("photoFileInputCamera").value = "";
+  document.getElementById("photoFileInputLibrary").value = "";
   document.getElementById("nameReviewList").innerHTML = "";
 }
 
@@ -843,14 +928,10 @@ async function handlePhotoFile(file) {
   }
   setPhotoStatus("Reading photo… this can take a little while on a phone.");
   try {
-    const result = await window.Tesseract.recognize(file, "eng", {
-      logger: m => {
-        if (m.status === "recognizing text" && typeof m.progress === "number") {
-          setPhotoStatus(`Reading photo… ${Math.round(m.progress * 100)}%`);
-        }
-      },
+    const text = await runNameOCR(file, progress => {
+      setPhotoStatus(`Reading photo… ${Math.round(progress * 100)}%`);
     });
-    const names = extractNameCandidatesFromOCRText(result.data.text || "");
+    const names = extractNameCandidatesFromOCRText(text);
     if (!names.length) {
       setPhotoStatus("Couldn't find anything that looked like a list of names. You can still add lines manually below, or try a clearer photo.");
     } else {
@@ -866,15 +947,35 @@ async function handlePhotoFile(file) {
 
 function addCheckedNamesAsWorkers() {
   const rows = [...document.querySelectorAll("#nameReviewList .name-check-row")];
-  const namesToAdd = rows
+  const namesChecked = rows
     .filter(row => row.querySelector('input[type="checkbox"]').checked)
     .map(row => row.querySelector('input[type="text"]').value.trim())
     .filter(Boolean);
 
-  if (!namesToAdd.length) {
+  if (!namesChecked.length) {
     alert("Nothing checked — check at least one name, or cancel.");
     return;
   }
+
+  // Same person can already be on the roster (re-scanning a sheet, two
+  // photos that overlap, editing a review row to match an existing name),
+  // or can appear twice in this same batch — either way that should
+  // collapse to the existing worker, not spawn a second row with a
+  // "-2" id tag next to an otherwise-identical name. Match case/whitespace-
+  // insensitively, same as the OCR-line de-dupe above.
+  const normalize = s => s.toLowerCase().trim().replace(/\s+/g, " ");
+  const existingNames = new Set(roster.map(w => normalize(w.name)));
+  const namesToAdd = [];
+  let skippedCount = 0;
+  namesChecked.forEach(name => {
+    const key = normalize(name);
+    if (existingNames.has(key)) {
+      skippedCount++;
+      return;
+    }
+    existingNames.add(key);
+    namesToAdd.push(name);
+  });
 
   namesToAdd.forEach(name => {
     const id = uniqueId(name, roster);
@@ -890,7 +991,12 @@ function addCheckedNamesAsWorkers() {
   saveRoster();
   renderTable();
   closePhotoModal();
-  alert(`Added ${namesToAdd.length} worker(s). Ratings, partners, and everything else still default to blank — edit each one to fill those in.`);
+  const skippedNote = skippedCount ? ` (${skippedCount} skipped — already on the roster.)` : "";
+  if (namesToAdd.length) {
+    alert(`Added ${namesToAdd.length} worker(s).${skippedNote} Ratings, partners, and everything else still default to blank — edit each one to fill those in.`);
+  } else {
+    alert(`Nothing added — everyone checked is already on the roster.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -920,7 +1026,12 @@ document.getElementById("btnPhotoImport").addEventListener("click", () => {
 });
 document.getElementById("btnPhotoCancel").addEventListener("click", closePhotoModal);
 document.getElementById("photoOverlay").addEventListener("click", (e) => { if (e.target.id === "photoOverlay") closePhotoModal(); });
-document.getElementById("photoFileInput").addEventListener("change", (e) => {
+document.getElementById("btnTakePhoto").addEventListener("click", () => document.getElementById("photoFileInputCamera").click());
+document.getElementById("btnChooseFromLibrary").addEventListener("click", () => document.getElementById("photoFileInputLibrary").click());
+document.getElementById("photoFileInputCamera").addEventListener("change", (e) => {
+  if (e.target.files[0]) handlePhotoFile(e.target.files[0]);
+});
+document.getElementById("photoFileInputLibrary").addEventListener("change", (e) => {
   if (e.target.files[0]) handlePhotoFile(e.target.files[0]);
 });
 document.getElementById("btnAddBlankNameRow").addEventListener("click", () => {

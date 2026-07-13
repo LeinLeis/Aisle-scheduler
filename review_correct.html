@@ -301,11 +301,16 @@
     <div class="modal">
       <h2>Import Case Counts from Photo</h2>
       <div class="modal-sub">
-        Photo of tonight's receiving/case-count sheet. This reads it entirely on your device and does a best-effort guess at which number belongs to which aisle — always double-check the review table below before applying, OCR on handwriting especially can get it wrong.
+        Photo of tonight's receiving/case-count sheet. This reads it entirely on your device and does a best-effort guess at which number belongs to which aisle — always double-check the review table below before applying, OCR on handwriting especially can get it wrong. Works best with a clear, well-lit, straight-on photo of printed text.
       </div>
 
       <div class="field">
-        <input type="file" id="casePhotoFileInput" accept="image/*">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" id="btnCaseTakePhoto">📷 Take Photo</button>
+          <button type="button" id="btnCaseChooseFromLibrary">🖼️ Choose from Library</button>
+        </div>
+        <input type="file" id="casePhotoFileInputCamera" accept="image/*" capture="environment" style="display:none;">
+        <input type="file" id="casePhotoFileInputLibrary" accept="image/*" style="display:none;">
       </div>
 
       <div id="casePhotoStatus" class="hint" style="display:none; margin-bottom:12px;"></div>
@@ -441,6 +446,10 @@ document.getElementById("btnLoadSample").addEventListener("click", () => {
   ];
   localStorage.setItem(ROSTER_KEY, JSON.stringify(sample));
   refreshRosterState();
+  if (hasGenerated) {
+    reconcileAssignmentsWithRoster();
+    renderAll();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -503,6 +512,71 @@ function loadTesseractForCaseCounts() {
   return caseTesseractLoadPromise;
 }
 
+// Same normalization as the roster photo import: re-encode through canvas
+// (sidesteps HEIC/orientation quirks), downscale oversized photos, convert
+// to grayscale. See worker_roster.html's preprocessImageForOCR for the
+// full rationale.
+function preprocessImageForOCR(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        const maxDim = 1800;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = maxDim / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const d = imageData.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          d[i] = d[i + 1] = d[i + 2] = gray;
+        }
+        ctx.putImageData(imageData, 0, 0);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Couldn't process that photo.")), "image/jpeg", 0.92);
+      } catch (err) {
+        URL.revokeObjectURL(url);
+        reject(err);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Couldn't open that photo — try a different one (some phones save in a format the browser can't read; a regular JPEG works best)."));
+    };
+    img.src = url;
+  });
+}
+
+// Runs OCR via a dedicated worker with an explicit page-segmentation mode
+// instead of the one-shot Tesseract.recognize() helper — see
+// worker_roster.html's runNameOCR for why. PSM 6 (single uniform text
+// block) reads a plain line-per-aisle sheet far more reliably than the
+// default full-page-layout detection.
+async function runCaseCountOCR(file, onProgress) {
+  const image = await preprocessImageForOCR(file);
+  const worker = await window.Tesseract.createWorker("eng", 1, {
+    logger: m => {
+      if (m.status === "recognizing text" && typeof m.progress === "number") onProgress(m.progress);
+    },
+  });
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: "6" });
+    const { data } = await worker.recognize(image);
+    return data.text || "";
+  } finally {
+    await worker.terminate();
+  }
+}
+
 // For each line, the last number on the line is treated as the case count;
 // any earlier number that matches a known aisle number maps to that zone.
 // Best-effort — the review table is where the person catches what this gets
@@ -546,7 +620,8 @@ function closeCasePhotoModal() {
   document.getElementById("casePhotoStatus").style.display = "none";
   document.getElementById("caseReviewWrap").style.display = "none";
   document.getElementById("btnCasePhotoApply").style.display = "none";
-  document.getElementById("casePhotoFileInput").value = "";
+  document.getElementById("casePhotoFileInputCamera").value = "";
+  document.getElementById("casePhotoFileInputLibrary").value = "";
   document.getElementById("caseReviewList").innerHTML = "";
 }
 
@@ -569,14 +644,10 @@ async function handleCasePhotoFile(file) {
   }
   setCasePhotoStatus("Reading photo… this can take a little while on a phone.");
   try {
-    const result = await window.Tesseract.recognize(file, "eng", {
-      logger: m => {
-        if (m.status === "recognizing text" && typeof m.progress === "number") {
-          setCasePhotoStatus(`Reading photo… ${Math.round(m.progress * 100)}%`);
-        }
-      },
+    const text = await runCaseCountOCR(file, progress => {
+      setCasePhotoStatus(`Reading photo… ${Math.round(progress * 100)}%`);
     });
-    const parsed = parseCaseCountsFromOCRText(result.data.text || "");
+    const parsed = parseCaseCountsFromOCRText(text);
     const foundCount = Object.keys(parsed).length;
     setCasePhotoStatus(
       foundCount
@@ -670,7 +741,12 @@ document.getElementById("btnCasePhotoImport").addEventListener("click", () => {
 });
 document.getElementById("btnCasePhotoCancel").addEventListener("click", closeCasePhotoModal);
 document.getElementById("casePhotoOverlay").addEventListener("click", (e) => { if (e.target.id === "casePhotoOverlay") closeCasePhotoModal(); });
-document.getElementById("casePhotoFileInput").addEventListener("change", (e) => {
+document.getElementById("btnCaseTakePhoto").addEventListener("click", () => document.getElementById("casePhotoFileInputCamera").click());
+document.getElementById("btnCaseChooseFromLibrary").addEventListener("click", () => document.getElementById("casePhotoFileInputLibrary").click());
+document.getElementById("casePhotoFileInputCamera").addEventListener("change", (e) => {
+  if (e.target.files[0]) handleCasePhotoFile(e.target.files[0]);
+});
+document.getElementById("casePhotoFileInputLibrary").addEventListener("change", (e) => {
   if (e.target.files[0]) handleCasePhotoFile(e.target.files[0]);
 });
 document.getElementById("btnCasePhotoApply").addEventListener("click", applyCaseReviewToGrid);
@@ -693,6 +769,30 @@ function recomputeZone(zid) {
   const group = assignments[zid].workerIds.map(id => rosterById[id]).filter(Boolean);
   assignments[zid].workloadHours = AE.workloadHoursFor(zone, group, settings);
   assignments[zid].flatHours = flatHoursFor(zone, group.length);
+}
+
+// A worker can be referenced in tonight's assignments but no longer exist
+// on the roster (deleted, or a duplicate that got cleaned up) — their chip
+// already gets hidden when rendering a zone, but headcounts, Flat/Adjusted
+// hours, and understaffed flags were still counting them since those read
+// workerIds.length directly. Prune any such id out of every zone up front
+// so everything downstream — display and math alike — agrees with what's
+// actually on the roster right now.
+function reconcileAssignmentsWithRoster() {
+  let changed = false;
+  Object.keys(assignments).forEach(zid => {
+    const a = assignments[zid];
+    const filtered = a.workerIds.filter(id => rosterById[id]);
+    if (filtered.length !== a.workerIds.length) {
+      a.workerIds = filtered;
+      changed = true;
+    }
+  });
+  if (changed) {
+    Object.keys(assignments).forEach(zid => recomputeZone(zid));
+    saveNightState();
+  }
+  return changed;
 }
 
 function zonesContaining(workerId) {
@@ -1174,6 +1274,7 @@ buildCaseCountGrid();
 refreshRosterState();
 initTapToMove();
 if (loadNightState()) {
+  reconcileAssignmentsWithRoster();
   document.getElementById("resultsArea").style.display = "block";
   document.getElementById("btnRegenerate").style.display = "inline-block";
   renderAll();

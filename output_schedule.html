@@ -284,6 +284,33 @@ function zonesContaining(workerId) {
   return Object.entries(assignments).filter(([, a]) => a.workerIds.includes(workerId)).map(([zid]) => zid);
 }
 
+// A worker can be referenced in a finalized zone but no longer exist on the
+// current roster (deleted, or a duplicate that got cleaned up) — their name
+// tag already gets hidden when rendering, but headcounts, Flat/Adjusted
+// hours, and understaffed flags were still counting them since those read
+// workerIds.length directly. Prune any such id out of every zone up front,
+// and recompute the Adjusted-hours estimate for the real remaining crew,
+// so everything on this printout agrees with the roster as it stands now.
+function reconcileAssignmentsWithRoster() {
+  let changed = false;
+  Object.entries(assignments).forEach(([zid, a]) => {
+    const ids = a.workerIds || [];
+    const filtered = ids.filter(id => rosterById[id]);
+    if (filtered.length !== ids.length) {
+      a.workerIds = filtered;
+      const zone = zoneById[zid];
+      const group = filtered.map(id => rosterById[id]);
+      if (zone && zone.estimationMethod !== "fixed_duration") {
+        a.workloadHours = AE.workloadHoursFor(zone, group, settings);
+      }
+      a.flatHours = flatHoursFor(zone, group.length);
+      changed = true;
+    }
+  });
+  if (changed) persist();
+  return changed;
+}
+
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
@@ -315,6 +342,8 @@ function load() {
       a.flatHours = flatHoursFor(zoneById[zid], (a.workerIds || []).length);
     }
   });
+
+  reconcileAssignmentsWithRoster();
 
   document.getElementById("emptyState").style.display = "none";
   document.getElementById("scheduleArea").style.display = "block";
