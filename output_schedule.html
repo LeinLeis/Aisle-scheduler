@@ -250,6 +250,26 @@
   }
   .zone-done-note .rating-change { color: var(--accent); font-weight: 600; }
 
+  .checklist-list { display: flex; flex-direction: column; gap: 6px; }
+  .checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .checklist-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
+  .checklist-item .cl-label { flex: 1; }
+  .checklist-item .cl-meta { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+  .checklist-item.done { opacity: 0.55; }
+  .checklist-item.done .cl-label { text-decoration: line-through; }
+  .checklist-item.overdue { border-color: var(--red); }
+  .checklist-item.overdue .cl-meta { color: var(--red); font-weight: 600; }
+
   @media print {
     body { background: #fff; color: #000; padding: 10px; }
     .nav-row, .meta-bar .actions, button, .no-print { display: none !important; }
@@ -267,17 +287,17 @@
 
   <h1>Tonight's Schedule</h1>
   <div class="subtitle">
-    Read-only printout of the finalized plan. To move people between zones, go back to Review &amp; Correct — this screen is for reading the plan and logging actual hours as the shift runs.
+    Read-only printout of the finalized plan. To move people between zones, go back to Assignment — this screen is for reading the plan and logging actual hours as the shift runs.
   </div>
 
   <div class="nav-row">
     <a class="navlink" href="worker_roster.html">Worker Roster</a>
-    <a class="navlink" href="review_correct.html">Review &amp; Correct</a>
+    <a class="navlink" href="review_correct.html">Assignment</a>
     <a class="navlink active" href="output_schedule.html">Output Schedule</a>
   </div>
 
   <div id="emptyState" class="empty-state" style="display:none;">
-    No finalized schedule yet. Go to <a href="review_correct.html">Review &amp; Correct</a>, generate tonight's schedule, and hit "Finalize &amp; Save Schedule" — it'll show up here.
+    No finalized schedule yet. Go to <a href="review_correct.html">Assignment</a>, generate tonight's schedule, and hit "Finalize &amp; Save Schedule" — it'll show up here.
   </div>
 
   <div id="scheduleArea" style="display:none;">
@@ -290,6 +310,11 @@
         <span class="status-msg" id="statusMsg"></span>
         <button id="btnPrint">Print</button>
       </div>
+    </div>
+
+    <div class="panel" id="checklistPanel">
+      <h3>Nightly Checklist</h3>
+      <div id="checklistList" class="checklist-list"></div>
     </div>
 
     <div class="zone-list" id="zoneList"></div>
@@ -488,7 +513,10 @@ function renderZoneList() {
     const a = assignments[zone.id];
     if (!a) continue;
     const isDept = zone.department === "dairy" || zone.department === "frozen";
-    const understaffed = zone.department !== "juice" && a.workerIds.length < 2;
+    // Juice used to be exempt from this red flag when it was a flat
+    // duration regardless of headcount — now it's real case-rate, so a
+    // lone juice worker is understaffed exactly like a lone grocery one.
+    const understaffed = a.workerIds.length < 2;
 
     const row = document.createElement("div");
     row.className = "zone-row" + (isDept ? " dept" : "") + (understaffed ? " understaffed" : "");
@@ -611,6 +639,7 @@ function renderAll() {
   renderMeta();
   renderConflicts();
   renderTimeSummary();
+  renderChecklist();
   renderZoneList();
   renderUnassigned();
   wireActualTimeInputs();
@@ -742,6 +771,109 @@ function wireZoneDoneButtons() {
     btn.addEventListener("click", () => markZoneDone(btn.dataset.zoneId));
   });
 }
+
+// ---------------------------------------------------------------------------
+// Nightly Checklist — SPARK / PLE / TLE plus timed door checks. Standing,
+// always-visible, kept separate from the zone list so it doesn't get lost
+// in the freight schedule over a 13-hour shift where nights blend together
+// (that's the whole point, per the original design doc). Door items carry
+// a due clock-time on the same 10:20pm-start clock as the shift breaks —
+// once that time passes without being checked off, the row flags red and
+// a one-time alert fires (on-screen always; browser Notification/vibration
+// too if the device grants permission — best-effort, not guaranteed if the
+// screen's off or the tab isn't open).
+// ---------------------------------------------------------------------------
+const CHECKLIST_ITEMS = [
+  { id: "spark", label: "SPARK Inspection" },
+  { id: "ple", label: "PLE Inspection" },
+  { id: "tle", label: "TLE Inspection" },
+  { id: "door_355", label: "Door Check", dueAt: { hour: 3, minute: 55 } },
+  { id: "door_440", label: "Door Check", dueAt: { hour: 4, minute: 40 } },
+  { id: "door_540", label: "Door Check", dueAt: { hour: 5, minute: 40 } },
+];
+
+let checklistAlerted = {}; // per-item, session-only — a due alert fires once
+
+function dueDateFor(item, now) {
+  if (!item.dueAt) return null;
+  const start = getShiftStart(now);
+  const due = new Date(start);
+  due.setDate(start.getDate() + 1);
+  due.setHours(item.dueAt.hour, item.dueAt.minute, 0, 0);
+  return due;
+}
+
+function checklistState() {
+  if (!finalized.checklist) finalized.checklist = {};
+  return finalized.checklist;
+}
+
+function renderChecklist() {
+  const list = document.getElementById("checklistList");
+  if (!list || !finalized) return;
+  const state = checklistState();
+  const now = new Date();
+  list.innerHTML = CHECKLIST_ITEMS.map(item => {
+    const entry = state[item.id] || {};
+    const due = dueDateFor(item, now);
+    const overdue = !!due && !entry.done && now >= due;
+    const metaText = entry.done
+      ? `done ${formatClock(new Date(entry.at))}`
+      : due
+        ? `due ${due.toLocaleString(undefined, { hour: "numeric", minute: "2-digit" })}`
+        : "";
+    return `
+      <label class="checklist-item${entry.done ? " done" : ""}${overdue ? " overdue" : ""}">
+        <input type="checkbox" data-checklist-id="${item.id}" ${entry.done ? "checked" : ""}>
+        <span class="cl-label">${item.label}</span>
+        <span class="cl-meta">${metaText}</span>
+      </label>
+    `;
+  }).join("");
+  list.querySelectorAll("input[data-checklist-id]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.checklistId;
+      const s = checklistState();
+      if (cb.checked) {
+        s[id] = { done: true, at: new Date().toISOString() };
+        checklistAlerted[id] = true; // checking it off also silences any pending alert
+      } else {
+        s[id] = { done: false, at: null };
+      }
+      persist();
+      renderChecklist();
+    });
+  });
+}
+
+function checkDueAlerts() {
+  if (!finalized) return;
+  const state = checklistState();
+  const now = new Date();
+  let firedAny = false;
+  CHECKLIST_ITEMS.forEach(item => {
+    if (!item.dueAt) return;
+    const entry = state[item.id] || {};
+    if (entry.done || checklistAlerted[item.id]) return;
+    const due = dueDateFor(item, now);
+    if (due && now >= due) {
+      checklistAlerted[item.id] = true;
+      firedAny = true;
+      if ("Notification" in window && Notification.permission === "granted") {
+        try { new Notification(`${item.label} due now`, { body: "Tap to check it off on the Schedule screen." }); } catch (e) {}
+      }
+      if (navigator.vibrate) { try { navigator.vibrate([200, 100, 200]); } catch (e) {} }
+    }
+  });
+  if (firedAny) renderChecklist();
+}
+
+if ("Notification" in window && Notification.permission === "default") {
+  // Best-effort only — silently does nothing if denied or unsupported.
+  Notification.requestPermission().catch(() => {});
+}
+
+setInterval(checkDueAlerts, 20000);
 
 // ---------------------------------------------------------------------------
 // Long-press a worker bubble (in a zone, or in Not Assigned Tonight) to
@@ -888,12 +1020,78 @@ initBubbleLongPress();
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
 
 load();
+checkDueAlerts();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   });
 }
+</script>
+
+<script>
+// ---------------------------------------------------------------------
+// Swipe left/right between screens — Roster < Assignment > Schedule.
+// Touch-only (mouse-based drag-and-drop on desktop never fires touch
+// events, so this doesn't interfere there). Ignored when the gesture
+// starts on anything interactive so it doesn't fight with buttons,
+// inputs, links, worker chips, or the long-press bubble menu.
+// ---------------------------------------------------------------------
+(function () {
+  const PAGES = [
+    { file: "worker_roster.html", label: "Roster" },
+    { file: "review_correct.html", label: "Assignment" },
+    { file: "output_schedule.html", label: "Schedule" },
+  ];
+  const here = location.pathname.split("/").pop() || "worker_roster.html";
+  const idx = PAGES.findIndex(p => p.file === here);
+  if (idx === -1) return;
+
+  function injectDots() {
+    const wrap = document.createElement("div");
+    wrap.className = "swipe-dots no-print";
+    wrap.innerHTML = PAGES.map((p, i) => `<span class="swipe-dot${i === idx ? " active" : ""}"></span>`).join("");
+    document.body.appendChild(wrap);
+    const style = document.createElement("style");
+    style.textContent = `
+      .swipe-dots { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 7px; z-index: 400; pointer-events: none; }
+      .swipe-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+      .swipe-dot.active { background: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function goTo(newIdx) {
+    if (newIdx < 0 || newIdx >= PAGES.length) return;
+    location.href = PAGES[newIdx].file;
+  }
+
+  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .worker-tag, .bubble-menu, .overlay, .modal";
+  const SWIPE_THRESHOLD = 70;
+  let startX = null, startY = null, startedOnInteractive = false;
+
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    startedOnInteractive = !!e.target.closest(INTERACTIVE_SELECTOR);
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (startX === null || startedOnInteractive) { startX = null; return; }
+    const t = e.changedTouches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    startX = null;
+    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) goTo(idx + 1); // swipe left -> next page
+    else goTo(idx - 1);        // swipe right -> previous page
+  }, { passive: true });
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDots);
+  else injectDots();
+})();
 </script>
 </body>
 </html>

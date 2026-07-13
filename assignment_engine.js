@@ -46,19 +46,31 @@
       {
         casePerMinuteRate: 1.0,
         maxZoneHoursPerWorker: 5.5,
-        groceryTargetHours: 4.0,
+        // Shift starts 10:20pm. Before the 2:00am lunch there's a 15-min
+        // midnight break, so actual working time available is 100min
+        // (10:20pm-12:00am) + 105min (12:15am-2:00am) = 205min = ~3h25m.
+        // Grocery's target is pinned to that real pre-lunch window (not a
+        // round number) so every balancing pass below — adaptive group
+        // sizing, overstaffed/light-zone rebalancing — is all aiming at
+        // "done before lunch" instead of an arbitrary 4-hour ceiling.
+        groceryTargetHours: 205 / 60,
         maxGroupSize: 4,
         needsImprovementEfficiencyFactor: 0.75,
         newHireEfficiencyFactor: 0.5,
-        juiceFixedDurationHours: 3.0,
         // Water gallons in Infants and in the juice aisle itself don't come
         // in on the daily truck, so they never show up in a case count —
         // but juice workers still have to stock them, and it normally adds
-        // about another hour on top of the juice aisle's own workload.
+        // about another hour on top of the juice aisle's own case-driven
+        // workload. This is a flat addition, not divided across headcount —
+        // it's roughly the same amount of physical restocking no matter how
+        // many people are there to share it.
         juiceHiddenTaskHours: 1.0,
-        // Hard ceiling on a juice worker's total night once that hidden
-        // hour is included. Juice already eats most of a shift on its own,
-        // so this leaves very little room for a second aisle — by design.
+        // Hard ceiling on a juice worker's total night, hidden hour
+        // included. Juice already eats most of a shift on its own, so this
+        // leaves very little room for a second aisle — by design. This is
+        // also juice's growth target: the algorithm adds people to juice
+        // until its real computed time (case-driven + hidden hour) fits
+        // under this number, same as grocery grows toward its own target.
         juiceMaxTotalHours: 5.0,
         dairyFixedDurationHours: 4.0,
         frozenFixedDurationHours: 4.0,
@@ -111,7 +123,7 @@
     { id: "F", aisles: "12 & 13", department: "grocery", estimationMethod: "case_rate", fixedHeadcount: null },
     { id: "G", aisles: "14 & 15", department: "grocery", estimationMethod: "case_rate", fixedHeadcount: null },
     { id: "H", aisles: "19", department: "grocery", estimationMethod: "case_rate", fixedHeadcount: null },
-    { id: "I", aisles: "20, 21 & 22", department: "juice", estimationMethod: "fixed_duration", fixedHeadcount: null },
+    { id: "I", aisles: "20, 21 & 22", department: "juice", estimationMethod: "case_rate", fixedHeadcount: null },
     { id: "J", aisles: "Dairy", department: "dairy", estimationMethod: "fixed_duration", fixedHeadcount: 3 },
     { id: "K", aisles: "Frozen", department: "frozen", estimationMethod: "fixed_duration", fixedHeadcount: 2 },
   ];
@@ -151,16 +163,21 @@
     if (zone.estimationMethod === "fixed_duration") {
       if (zone.department === "dairy") return settings.dairyFixedDurationHours;
       if (zone.department === "frozen") return settings.frozenFixedDurationHours;
-      // Juice's real workload is the truck/case-driven portion PLUS the
-      // water-gallon restock task that never appears in a case count.
-      return settings.juiceFixedDurationHours + settings.juiceHiddenTaskHours;
     }
     const cap = workers.length ? effectiveCapacity(workers, settings) : 1.0;
-    return zoneTotalHours(zone, settings) / cap;
+    const caseDrivenHours = zoneTotalHours(zone, settings) / cap;
+    // Juice's real workload is the truck/case-driven portion (now genuinely
+    // case-rate, same math as grocery) PLUS a flat hour for the water-gallon
+    // restock task that never appears in a case count — that hour doesn't
+    // shrink just because more people showed up, so it's added after the
+    // capacity division, not inside it.
+    return zone.department === "juice" ? caseDrivenHours + settings.juiceHiddenTaskHours : caseDrivenHours;
   }
 
   function targetHoursFor(zone, settings) {
-    return zone.department === "grocery" ? settings.groceryTargetHours : settings.maxZoneHoursPerWorker;
+    if (zone.department === "grocery") return settings.groceryTargetHours;
+    if (zone.department === "juice") return settings.juiceMaxTotalHours;
+    return settings.maxZoneHoursPerWorker;
   }
 
   function targetGroupSize(zone, settings) {
@@ -457,7 +474,11 @@
         group.push(pick);
         remaining[zone.id] -= 1;
       }
-      if (group.length < 2 && zone.department !== "juice") {
+      // Juice used to be exempt here, back when its time never moved
+      // regardless of headcount — now that it's real case-rate, a lone
+      // juice worker on a heavy night is exactly as understaffed as a lone
+      // grocery worker would be, so it gets the same flag.
+      if (group.length < 2) {
         addFlag(assignment, "understaffed_below_pair");
       }
       if (blockedByIncompatibility) addFlag(assignment, "incompatibility_conflict");
@@ -590,7 +611,14 @@
   // ---------------------------------------------------------------------
   function rebalanceOverstaffedZones(zones, assignments, workersById, settings) {
     const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
-    const groceryIds = zones.filter(z => z.estimationMethod !== "fixed_duration").map(z => z.id);
+    // Grocery-only, deliberately. Used to be "anything not fixed_duration"
+    // as a shorthand for grocery, back when Juice was the only other
+    // case-rate zone lumped in with dairy/frozen's fixed_duration — now
+    // that Juice computes real case-driven hours too, that shorthand would
+    // silently pull Juice into grocery's lend/merge machinery using
+    // grocery's own target and thresholds, which isn't right for it (Juice
+    // has its own target and its own rules about picking up second aisles).
+    const groceryIds = zones.filter(z => z.department === "grocery").map(z => z.id);
 
     for (let i = 0; i < groceryIds.length; i++) {
       const heavyCandidates = groceryIds.filter(
@@ -771,7 +799,10 @@
   // qualify by hours — it's just no longer enough to qualify on its own.
   function rebalanceLightZones(zones, assignments, workersById, settings) {
     const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
-    const groceryIds = zones.filter(z => z.estimationMethod !== "fixed_duration").map(z => z.id);
+    // Grocery-only, deliberately — see the same filter in
+    // rebalanceOverstaffedZones above for why this can't just be "anything
+    // not fixed_duration" anymore now that Juice is also case-rate.
+    const groceryIds = zones.filter(z => z.department === "grocery").map(z => z.id);
 
     for (let i = 0; i < groceryIds.length; i++) {
       const heavyCandidates = groceryIds.filter(

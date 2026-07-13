@@ -201,7 +201,7 @@
 
   <div class="nav-row">
     <a class="navlink active" href="worker_roster.html">Worker Roster</a>
-    <a class="navlink" href="review_correct.html">Review &amp; Correct</a>
+    <a class="navlink" href="review_correct.html">Assignment</a>
     <a class="navlink" href="output_schedule.html">Output Schedule</a>
   </div>
 
@@ -1166,6 +1166,71 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   });
 }
+</script>
+
+<script>
+// ---------------------------------------------------------------------
+// Swipe left/right between screens — Roster < Assignment > Schedule.
+// Touch-only (mouse-based drag-and-drop on desktop never fires touch
+// events, so this doesn't interfere there). Ignored when the gesture
+// starts on anything interactive so it doesn't fight with buttons,
+// inputs, links, worker chips, or the long-press bubble menu.
+// ---------------------------------------------------------------------
+(function () {
+  const PAGES = [
+    { file: "worker_roster.html", label: "Roster" },
+    { file: "review_correct.html", label: "Assignment" },
+    { file: "output_schedule.html", label: "Schedule" },
+  ];
+  const here = location.pathname.split("/").pop() || "worker_roster.html";
+  const idx = PAGES.findIndex(p => p.file === here);
+  if (idx === -1) return;
+
+  function injectDots() {
+    const wrap = document.createElement("div");
+    wrap.className = "swipe-dots no-print";
+    wrap.innerHTML = PAGES.map((p, i) => `<span class="swipe-dot${i === idx ? " active" : ""}"></span>`).join("");
+    document.body.appendChild(wrap);
+    const style = document.createElement("style");
+    style.textContent = `
+      .swipe-dots { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 7px; z-index: 400; pointer-events: none; }
+      .swipe-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+      .swipe-dot.active { background: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function goTo(newIdx) {
+    if (newIdx < 0 || newIdx >= PAGES.length) return;
+    location.href = PAGES[newIdx].file;
+  }
+
+  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .worker-tag, .bubble-menu, .overlay, .modal";
+  const SWIPE_THRESHOLD = 70;
+  let startX = null, startY = null, startedOnInteractive = false;
+
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    startedOnInteractive = !!e.target.closest(INTERACTIVE_SELECTOR);
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (startX === null || startedOnInteractive) { startX = null; return; }
+    const t = e.changedTouches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    startX = null;
+    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) goTo(idx + 1); // swipe left -> next page
+    else goTo(idx - 1);        // swipe right -> previous page
+  }, { passive: true });
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDots);
+  else injectDots();
+})();
 </script>
 </body>
 </html>
