@@ -129,11 +129,49 @@
     padding: 3px 10px;
     margin: 2px 5px 2px 0;
     font-size: 13px;
+    /* Long-press brings up the Edit/Remove/Delete menu — stop iOS/Android
+       from popping up their own text-selection/callout menu mid-hold. */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
   .worker-tag .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
   .dot-on_pace { background: var(--green); }
   .dot-needs_improvement { background: var(--amber); }
   .dot-new { background: var(--accent); }
+
+  .bubble-menu {
+    position: fixed;
+    z-index: 500;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+    overflow: hidden;
+    min-width: 150px;
+  }
+  .bubble-menu .bm-title {
+    padding: 8px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+  .bubble-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .bubble-menu button:hover { background: var(--panel); }
+  .bubble-menu button.bm-delete { color: var(--red); }
+  .bubble-menu button:disabled { color: var(--text-dim); cursor: default; }
+  .bubble-menu button:disabled:hover { background: transparent; }
 
   .time-compare {
     display: flex;
@@ -186,40 +224,26 @@
 
   .status-msg { font-size: 12px; color: var(--green); }
 
-  .finish-panel-body { font-size: 13px; line-height: 1.7; }
-  .finish-panel-body .breakdown-line { color: var(--text-dim); }
-  .finish-panel-body .breakdown-line b { color: var(--text); }
-  .finish-panel-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  .net-hours-input {
-    width: 70px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 5px 6px;
-    border-radius: 5px;
-    font-size: 13px;
-    font-family: inherit;
+  .zone-done-btn {
+    font-size: 12.5px;
+    padding: 6px 12px;
+    border-color: var(--green);
+    color: var(--green);
+    background: transparent;
   }
-  .rating-review-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
+  .zone-done-btn:hover { background: #123018; }
+  .zone-done-btn.done {
+    border-color: var(--border);
+    color: var(--text-dim);
+    background: transparent;
   }
-  .rating-review-row:last-child { border-bottom: none; }
-  .rating-review-row .rr-name { min-width: 130px; font-weight: 600; }
-  .rating-review-row .rr-why { color: var(--text-dim); font-size: 12px; flex: 1 1 auto; min-width: 160px; }
-  .rating-review-row select {
-    font: inherit;
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 4px 6px;
+  .zone-done-note {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    line-height: 1.5;
   }
+  .zone-done-note .rating-change { color: var(--accent); font-weight: 600; }
 
   @media print {
     body { background: #fff; color: #000; padding: 10px; }
@@ -259,24 +283,7 @@
       <span class="meta-text" id="metaText"></span>
       <div class="actions no-print">
         <span class="status-msg" id="statusMsg"></span>
-        <button id="btnFinishNight">Finish Night</button>
         <button id="btnPrint">Print</button>
-      </div>
-    </div>
-
-    <div class="panel no-print" id="finishPanel" style="display:none;">
-      <h3>Finish Night — Log Time</h3>
-      <div class="finish-panel-body" id="finishPanelBody"></div>
-      <div class="finish-panel-actions" id="finishPanelActions"></div>
-    </div>
-
-    <div class="panel no-print" id="ratingReviewPanel" style="display:none;">
-      <h3>Suggested Rating Changes</h3>
-      <div class="finish-panel-body" id="ratingReviewIntro"></div>
-      <div id="ratingReviewList"></div>
-      <div class="finish-panel-actions">
-        <button class="primary" id="btnSaveRatings">Save Rating Changes</button>
-        <button id="btnSkipRatings">Skip — Leave Ratings As-Is</button>
       </div>
     </div>
 
@@ -483,7 +490,7 @@ function renderZoneList() {
 
     const sortedWorkers = sortedByName(a.workerIds.map(id => rosterById[id]).filter(Boolean));
     const namesHtml = sortedWorkers.length
-      ? sortedWorkers.map(w => `<span class="worker-tag"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("")
+      ? sortedWorkers.map(w => `<span class="worker-tag" data-worker-id="${w.id}" data-from-zone="${zone.id}"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("")
       : '<span class="empty-hint">nobody assigned</span>';
 
     const flagsHtml = (a.flags || []).length
@@ -508,6 +515,11 @@ function renderZoneList() {
         <span class="time-adjusted" title="Adjusted for this crew's efficiency mix">Adjusted: <b>${a.workloadHours.toFixed(2)}h</b></span>
       `;
 
+    const doneBtnLabel = a.doneAt ? `Done ✓ ${formatClock(new Date(a.doneAt))}` : "Done";
+    const doneBtnClass = a.doneAt ? "zone-done-btn done" : "zone-done-btn";
+    const note = zoneDoneNotes[zone.id];
+    const noteHtml = note ? `<div class="zone-done-note">${note}</div>` : "";
+
     row.innerHTML = `
       <div class="zone-row-head">
         <span class="zone-name">${AE.zoneLabel(zone)}</span>
@@ -522,7 +534,9 @@ function renderZoneList() {
             <input type="number" step="0.1" min="0" class="actual-input" data-zone-id="${zone.id}" value="${hasActual ? a.actualHours : ""}" placeholder="log after shift">h
           </span>
           ${deltaHtml}
+          <button type="button" class="${doneBtnClass}" data-zone-id="${zone.id}">${doneBtnLabel}</button>
         </div>
+        ${noteHtml}
       </div>
       ${flagsHtml}
     `;
@@ -545,7 +559,7 @@ function renderUnassigned() {
     return;
   }
   panel.style.display = "block";
-  el.innerHTML = unassigned.map(w => `<span class="worker-tag"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("");
+  el.innerHTML = unassigned.map(w => `<span class="worker-tag" data-worker-id="${w.id}" data-from-zone="unassigned"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("");
 }
 
 function wireActualTimeInputs() {
@@ -595,17 +609,20 @@ function renderAll() {
   renderZoneList();
   renderUnassigned();
   wireActualTimeInputs();
+  wireZoneDoneButtons();
 }
 
 // ---------------------------------------------------------------------------
-// Finish Night — clock-based actual hours + rating suggestions
+// Per-aisle Done button — clock-based actual hours + rating update
 // ---------------------------------------------------------------------------
-// Shift always starts 10:20 PM. Three scheduled breaks come out of the
-// clock once each one has actually happened by the time the button is
-// pressed: a 15-min break at midnight, a 60-min lunch at 2:00 AM, and a
-// 15-min break at 5:00 AM. A break that hasn't happened yet (short night,
-// early finish) isn't deducted; a break that was mid-way through when the
-// button was pressed only has its elapsed portion deducted.
+// Shift always starts 10:20 PM, same for every aisle. Three scheduled
+// breaks come out of the clock once each one has actually happened by the
+// time a given aisle's Done button is pressed: a 15-min break at midnight,
+// a 60-min lunch at 2:00 AM, and a 15-min break at 5:00 AM. A break that
+// hasn't happened yet (short aisle, early finish) isn't deducted; a break
+// that was mid-way through when the button was pressed only has its
+// elapsed portion deducted. Each aisle gets its own elapsed-time snapshot
+// since each one is marked done at a different real moment.
 const SHIFT_START = { hour: 22, minute: 20 };
 const SHIFT_BREAKS = [
   { label: "Midnight break", hour: 0, minute: 0, durationMin: 15 },
@@ -654,130 +671,6 @@ function formatClock(d) {
   return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
 
-let pendingBreakdown = null;
-
-function renderFinishPanel() {
-  const now = new Date();
-  pendingBreakdown = computeShiftBreakdown(now);
-  const b = pendingBreakdown;
-
-  const breakLines = b.breakDetails.map(bd => {
-    const status = bd.deducted <= 0
-      ? "hasn't happened yet — not deducted"
-      : bd.deducted < bd.durationMin
-        ? `partially elapsed — ${bd.deducted.toFixed(0)} of ${bd.durationMin} min deducted`
-        : `deducted (${bd.durationMin} min)`;
-    return `<div class="breakdown-line">${bd.label}: ${status}</div>`;
-  }).join("");
-
-  const warn = (b.rawHours > 13 || b.rawHours < 2)
-    ? `<div class="breakdown-line" style="color:var(--amber);">That's ${b.rawHours.toFixed(2)}h raw since 10:20 PM — double check the time on this device before saving.</div>`
-    : "";
-
-  document.getElementById("finishPanelBody").innerHTML = `
-    <div class="breakdown-line">Shift start: <b>${formatClock(b.start)}</b> &nbsp;→&nbsp; Now: <b>${formatClock(b.now)}</b></div>
-    <div class="breakdown-line">Raw elapsed: <b>${b.rawHours.toFixed(2)}h</b></div>
-    ${breakLines}
-    <div class="breakdown-line">Breaks deducted: <b>${b.deductedHours.toFixed(2)}h</b></div>
-    ${warn}
-    <div class="breakdown-line" style="margin-top:6px;">
-      Net actual hours to apply to every logged zone tonight:
-      <input type="number" step="0.01" min="0" class="net-hours-input" id="netHoursOverride" value="${b.netHours.toFixed(2)}">h
-    </div>
-  `;
-  document.getElementById("finishPanelActions").innerHTML = `
-    <button class="primary" id="btnConfirmFinish">Apply to All Zones</button>
-    <button id="btnCancelFinish">Cancel</button>
-  `;
-  document.getElementById("finishPanel").style.display = "block";
-  document.getElementById("ratingReviewPanel").style.display = "none";
-
-  document.getElementById("btnConfirmFinish").addEventListener("click", () => {
-    const override = parseFloat(document.getElementById("netHoursOverride").value);
-    const netHours = Number.isFinite(override) ? Math.max(0, override) : b.netHours;
-    applyFinishNight(netHours);
-  });
-  document.getElementById("btnCancelFinish").addEventListener("click", () => {
-    document.getElementById("finishPanel").style.display = "none";
-  });
-}
-
-function applyFinishNight(netHours) {
-  Object.values(assignments).forEach(a => {
-    if (a.workerIds && a.workerIds.length) a.actualHours = netHours;
-  });
-  persist();
-  renderAll();
-  document.getElementById("finishPanel").style.display = "none";
-
-  const status = document.getElementById("statusMsg");
-  status.textContent = "Time saved";
-  setTimeout(() => { if (status.textContent === "Time saved") status.textContent = ""; }, 2000);
-
-  renderRatingReview();
-}
-
-// A worker performing significantly faster or slower than the zone's
-// Adjusted estimate gets a suggested rating nudge — never auto-applied,
-// always shown for review first. New hires are left alone; one night
-// isn't enough to graduate or flag someone still on probation.
-const RATING_THRESHOLD = 0.15;
-
-function buildRatingSuggestions() {
-  const perWorkerDeltas = {}; // id -> [deltaPct, ...]
-  Object.values(assignments).forEach(a => {
-    if (a.actualHours == null || !a.workloadHours || !a.workerIds || !a.workerIds.length) return;
-    const deltaPct = (a.actualHours - a.workloadHours) / a.workloadHours;
-    a.workerIds.forEach(id => {
-      if (!rosterById[id]) return;
-      (perWorkerDeltas[id] = perWorkerDeltas[id] || []).push(deltaPct);
-    });
-  });
-
-  const suggestions = [];
-  Object.entries(perWorkerDeltas).forEach(([id, deltas]) => {
-    const worker = rosterById[id];
-    if (!worker || worker.productionRating === "new") return;
-    const avg = deltas.reduce((s, d) => s + d, 0) / deltas.length;
-    let suggested = null;
-    let why = "";
-    if (worker.productionRating === "needs_improvement" && avg <= -RATING_THRESHOLD) {
-      suggested = "on_pace";
-      why = `Finished ${Math.abs(avg * 100).toFixed(0)}% faster than the adjusted estimate tonight.`;
-    } else if (worker.productionRating === "on_pace" && avg >= RATING_THRESHOLD) {
-      suggested = "needs_improvement";
-      why = `Finished ${(avg * 100).toFixed(0)}% slower than the adjusted estimate tonight.`;
-    }
-    if (suggested) suggestions.push({ id, worker, suggested, why });
-  });
-
-  return sortedByName(suggestions.map(s => s.worker)).map(w => suggestions.find(s => s.worker.id === w.id));
-}
-
-function renderRatingReview() {
-  const suggestions = buildRatingSuggestions();
-  const panel = document.getElementById("ratingReviewPanel");
-  if (!suggestions.length) {
-    panel.style.display = "none";
-    return;
-  }
-  document.getElementById("ratingReviewIntro").innerHTML =
-    `<div class="breakdown-line">Based on tonight's actual vs. adjusted hours. Nothing is saved until you hit Save below — adjust any of these first if you'd rather not change one.</div>`;
-
-  const list = document.getElementById("ratingReviewList");
-  list.innerHTML = suggestions.map(s => `
-    <div class="rating-review-row" data-worker-id="${s.id}">
-      <span class="rr-name">${s.worker.name}</span>
-      <span class="rr-why">${ratingLabel(s.worker.productionRating)} → ${s.why}</span>
-      <select class="rr-select">
-        <option value="${s.worker.productionRating}">Keep: ${ratingLabel(s.worker.productionRating)}</option>
-        <option value="${s.suggested}" selected>Change to: ${ratingLabel(s.suggested)}</option>
-      </select>
-    </div>
-  `).join("");
-  panel.style.display = "block";
-}
-
 function ratingLabel(r) {
   return { on_pace: "On Pace", needs_improvement: "Needs Improvement", new: "New" }[r] || r;
 }
@@ -786,25 +679,206 @@ function saveRosterBack() {
   localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
 }
 
-document.getElementById("btnFinishNight").addEventListener("click", renderFinishPanel);
+// Notes shown under a zone row after its Done button is tapped ("marked
+// done at 6:42 AM, Jane Doe: On Pace -> Needs Improvement"). Kept in memory
+// only, per session — doneAt/actualHours/productionRating are what actually
+// persist; the note is just a receipt so the tap isn't a silent action.
+let zoneDoneNotes = {};
 
-document.getElementById("btnSaveRatings").addEventListener("click", () => {
-  document.querySelectorAll(".rating-review-row").forEach(row => {
-    const id = row.dataset.workerId;
-    const value = row.querySelector(".rr-select").value;
-    if (rosterById[id]) rosterById[id].productionRating = value;
+// A worker performing significantly faster or slower than THIS zone's
+// Adjusted estimate gets nudged a tier the moment its Done button is
+// tapped — that's the whole point of a one-tap button, no separate review
+// screen. "New" hires are left alone; one night on one aisle isn't enough
+// to graduate or flag someone still on probation. Only two real tiers
+// exist besides "new" (on_pace / needs_improvement) so this can only ever
+// swap between those, never spiral.
+const RATING_THRESHOLD = 0.15;
+
+function markZoneDone(zoneId) {
+  const zone = zoneById[zoneId];
+  const a = assignments[zoneId];
+  if (!zone || !a || !a.workerIds || !a.workerIds.length) return;
+
+  const now = new Date();
+  const b = computeShiftBreakdown(now);
+  a.actualHours = Math.round(b.netHours * 100) / 100;
+  a.doneAt = now.toISOString();
+
+  const deltaPct = a.workloadHours ? (a.actualHours - a.workloadHours) / a.workloadHours : 0;
+  const changes = [];
+  a.workerIds.forEach(id => {
+    const worker = rosterById[id];
+    if (!worker || worker.productionRating === "new") return;
+    let next = null;
+    if (worker.productionRating === "needs_improvement" && deltaPct <= -RATING_THRESHOLD) next = "on_pace";
+    else if (worker.productionRating === "on_pace" && deltaPct >= RATING_THRESHOLD) next = "needs_improvement";
+    if (next) {
+      changes.push(`${worker.name}: ${ratingLabel(worker.productionRating)} → <span class="rating-change">${ratingLabel(next)}</span>`);
+      worker.productionRating = next;
+    }
   });
-  saveRosterBack();
-  document.getElementById("ratingReviewPanel").style.display = "none";
+  if (changes.length) saveRosterBack();
+
+  const pctText = `${deltaPct >= 0 ? "+" : ""}${(deltaPct * 100).toFixed(0)}% vs adjusted`;
+  zoneDoneNotes[zoneId] = changes.length
+    ? `Marked done at ${formatClock(now)} · ${a.actualHours.toFixed(2)}h actual (${pctText}). ${changes.join(" · ")}`
+    : `Marked done at ${formatClock(now)} · ${a.actualHours.toFixed(2)}h actual (${pctText}). No rating changes.`;
+
+  persist();
+  renderAll();
+
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+function wireZoneDoneButtons() {
+  document.querySelectorAll(".zone-done-btn").forEach(btn => {
+    btn.addEventListener("click", () => markZoneDone(btn.dataset.zoneId));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Long-press a worker bubble (in a zone, or in Not Assigned Tonight) to
+// bring up an Edit / Remove / Delete menu — same behavior as the bubbles on
+// Review & Correct.
+//   Edit   — jumps to the Worker Roster screen with that worker's edit
+//            modal already open.
+//   Remove — unassigns them from that zone for tonight only; disabled if
+//            they're already in Not Assigned Tonight.
+//   Delete — removes them from the whole roster, not just tonight.
+// ---------------------------------------------------------------------------
+function removeWorkerFromZone(zoneId, workerId) {
+  const a = assignments[zoneId];
+  if (!a) return;
+  const idx = (a.workerIds || []).indexOf(workerId);
+  if (idx < 0) return;
+  a.workerIds.splice(idx, 1);
+  const zone = zoneById[zoneId];
+  const group = a.workerIds.map(id => rosterById[id]).filter(Boolean);
+  if (zone && zone.estimationMethod !== "fixed_duration") {
+    a.workloadHours = AE.workloadHoursFor(zone, group, settings);
+  }
+  a.flatHours = flatHoursFor(zone, group.length);
+  persist();
   renderAll();
   const status = document.getElementById("statusMsg");
-  status.textContent = "Ratings saved";
-  setTimeout(() => { if (status.textContent === "Ratings saved") status.textContent = ""; }, 2000);
-});
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
 
-document.getElementById("btnSkipRatings").addEventListener("click", () => {
-  document.getElementById("ratingReviewPanel").style.display = "none";
-});
+function promptDeleteWorker(workerId) {
+  const worker = rosterById[workerId];
+  if (!worker) return;
+  if (!confirm(`Delete ${worker.name} from the roster? This removes them everywhere — not just tonight — and can't be undone.`)) return;
+  roster = roster.filter(w => w.id !== workerId);
+  rosterById = Object.fromEntries(roster.map(w => [w.id, w]));
+  saveRosterBack();
+  reconcileAssignmentsWithRoster();
+  renderAll();
+}
+
+function closeBubbleMenu() {
+  const el = document.getElementById("bubbleMenu");
+  if (el) el.remove();
+  document.removeEventListener("click", closeBubbleMenuOnOutsideClick, true);
+}
+
+function closeBubbleMenuOnOutsideClick(e) {
+  const el = document.getElementById("bubbleMenu");
+  if (el && !el.contains(e.target)) closeBubbleMenu();
+}
+
+function showBubbleMenu(workerId, fromZone, x, y) {
+  closeBubbleMenu();
+  const worker = rosterById[workerId];
+  if (!worker) return;
+
+  const canRemove = fromZone && fromZone !== "unassigned";
+  const menu = document.createElement("div");
+  menu.id = "bubbleMenu";
+  menu.className = "bubble-menu";
+  menu.innerHTML = `
+    <div class="bm-title">${worker.name}</div>
+    <button type="button" data-action="edit">Edit</button>
+    <button type="button" data-action="remove" ${canRemove ? "" : "disabled"}>${canRemove ? "Remove — unassign for tonight" : "Already unassigned"}</button>
+    <button type="button" class="bm-delete" data-action="delete">Delete from roster</button>
+  `;
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+  const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+
+  menu.querySelector('[data-action="edit"]').addEventListener("click", () => {
+    closeBubbleMenu();
+    location.href = "worker_roster.html?edit=" + encodeURIComponent(workerId);
+  });
+  if (canRemove) {
+    menu.querySelector('[data-action="remove"]').addEventListener("click", () => {
+      closeBubbleMenu();
+      removeWorkerFromZone(fromZone, workerId);
+    });
+  }
+  menu.querySelector('[data-action="delete"]').addEventListener("click", () => {
+    closeBubbleMenu();
+    promptDeleteWorker(workerId);
+  });
+
+  setTimeout(() => document.addEventListener("click", closeBubbleMenuOnOutsideClick, true), 0);
+}
+
+let longPressTimer = null;
+let longPressStartPos = null;
+const LONG_PRESS_MS = 550;
+const LONG_PRESS_MOVE_CANCEL_PX = 10;
+
+function beginLongPress(e, tag) {
+  const point = e.touches ? e.touches[0] : e;
+  if (!point) return;
+  longPressStartPos = { x: point.clientX, y: point.clientY };
+  clearTimeout(longPressTimer);
+  longPressTimer = setTimeout(() => {
+    showBubbleMenu(tag.dataset.workerId, tag.dataset.fromZone, point.clientX, point.clientY);
+  }, LONG_PRESS_MS);
+}
+
+function moveLongPress(e) {
+  if (!longPressStartPos) return;
+  const point = e.touches ? e.touches[0] : e;
+  if (!point) return;
+  const dx = point.clientX - longPressStartPos.x;
+  const dy = point.clientY - longPressStartPos.y;
+  if (Math.sqrt(dx * dx + dy * dy) > LONG_PRESS_MOVE_CANCEL_PX) cancelLongPress();
+}
+
+function cancelLongPress() {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+  longPressStartPos = null;
+}
+
+function initBubbleLongPress() {
+  document.addEventListener("touchstart", e => {
+    const tag = e.target.closest(".worker-tag[data-worker-id]");
+    if (tag) beginLongPress(e, tag);
+  }, { passive: true });
+  document.addEventListener("touchmove", moveLongPress, { passive: true });
+  document.addEventListener("touchend", cancelLongPress);
+  document.addEventListener("touchcancel", cancelLongPress);
+
+  // Mouse equivalent, mainly so this is testable on a laptop.
+  document.addEventListener("mousedown", e => {
+    const tag = e.target.closest(".worker-tag[data-worker-id]");
+    if (tag) beginLongPress(e, tag);
+  });
+  document.addEventListener("mousemove", moveLongPress);
+  document.addEventListener("mouseup", cancelLongPress);
+}
+
+initBubbleLongPress();
 
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
 

@@ -1148,6 +1148,14 @@ document.getElementById("btnPhotoAdd").addEventListener("click", addCheckedNames
 roster = loadRoster();
 renderTable();
 
+// Long-pressing a worker bubble on Review & Correct or Output Schedule and
+// picking "Edit" lands here with ?edit=<id> — jump straight into that
+// worker's edit modal instead of making them find the row themselves.
+(function openEditFromQueryParam() {
+  const id = new URLSearchParams(location.search).get("edit");
+  if (id && workerById(id)) openModal(id);
+})();
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").catch(() => {});

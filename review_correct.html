@@ -192,6 +192,39 @@
   .chip.dragging { opacity: 0.4; }
   .chip.conflict { border-color: var(--red); background: #2a1a1a; }
   .chip.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79,140,255,0.4); background: var(--accent-dim); }
+
+  .bubble-menu {
+    position: fixed;
+    z-index: 500;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+    overflow: hidden;
+    min-width: 150px;
+  }
+  .bubble-menu .bm-title {
+    padding: 8px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+  .bubble-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .bubble-menu button:hover { background: var(--panel); }
+  .bubble-menu button.bm-delete { color: var(--red); }
+  .bubble-menu button:disabled { color: var(--text-dim); cursor: default; }
+  .bubble-menu button:disabled:hover { background: transparent; }
   .zone-card.tap-target { border-color: var(--accent); cursor: pointer; }
   .zone-card.tap-target:active { background: #182036; }
   #unassignedTray.tap-target { border-color: var(--accent); border-style: solid; cursor: pointer; }
@@ -1579,11 +1612,16 @@ function initTapToMove() {
 }
 
 // ---------------------------------------------------------------------------
-// Long-press to delete a worker — removes them from the whole roster (not
-// just tonight), same as deleting on the Worker Roster screen, but reachable
-// without leaving this page. Deliberately a HOLD, not a tap, so it can't be
-// triggered by accident in the middle of tap-to-move — and still asks for
-// confirmation before actually touching the roster.
+// Long-press a worker bubble to bring up an Edit / Remove / Delete menu.
+// Deliberately a HOLD, not a tap, so it can't be triggered by accident in
+// the middle of tap-to-move.
+//   Edit   — jumps to the Worker Roster screen with that worker's edit
+//            modal already open.
+//   Remove — unassigns them from tonight's zone only (moveWorker to
+//            "unassigned"); disabled if they're already unassigned.
+//   Delete — removes them from the whole roster, not just tonight, same as
+//            deleting on the Worker Roster screen. Still asks for
+//            confirmation before actually touching the roster.
 // ---------------------------------------------------------------------------
 let longPressTimer = null;
 let longPressStartPos = null;
@@ -1608,6 +1646,58 @@ function promptDeleteWorker(workerId) {
   renderAll();
 }
 
+function closeBubbleMenu() {
+  const el = document.getElementById("bubbleMenu");
+  if (el) el.remove();
+  document.removeEventListener("click", closeBubbleMenuOnOutsideClick, true);
+}
+
+function closeBubbleMenuOnOutsideClick(e) {
+  const el = document.getElementById("bubbleMenu");
+  if (el && !el.contains(e.target)) closeBubbleMenu();
+}
+
+function showBubbleMenu(workerId, fromZone, x, y) {
+  closeBubbleMenu();
+  const worker = rosterById[workerId];
+  if (!worker) return;
+
+  const canRemove = fromZone && fromZone !== "unassigned";
+  const menu = document.createElement("div");
+  menu.id = "bubbleMenu";
+  menu.className = "bubble-menu";
+  menu.innerHTML = `
+    <div class="bm-title">${worker.name}</div>
+    <button type="button" data-action="edit">Edit</button>
+    <button type="button" data-action="remove" ${canRemove ? "" : "disabled"}>${canRemove ? "Remove — unassign for tonight" : "Already unassigned"}</button>
+    <button type="button" class="bm-delete" data-action="delete">Delete from roster</button>
+  `;
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+  const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+
+  menu.querySelector('[data-action="edit"]').addEventListener("click", () => {
+    closeBubbleMenu();
+    location.href = "worker_roster.html?edit=" + encodeURIComponent(workerId);
+  });
+  if (canRemove) {
+    menu.querySelector('[data-action="remove"]').addEventListener("click", () => {
+      closeBubbleMenu();
+      moveWorker(workerId, fromZone, "unassigned");
+    });
+  }
+  menu.querySelector('[data-action="delete"]').addEventListener("click", () => {
+    closeBubbleMenu();
+    promptDeleteWorker(workerId);
+  });
+
+  setTimeout(() => document.addEventListener("click", closeBubbleMenuOnOutsideClick, true), 0);
+}
+
 function beginLongPress(e, chip) {
   const point = e.touches ? e.touches[0] : e;
   if (!point) return;
@@ -1616,7 +1706,7 @@ function beginLongPress(e, chip) {
   clearTimeout(longPressTimer);
   longPressTimer = setTimeout(() => {
     longPressFired = true;
-    promptDeleteWorker(chip.dataset.workerId);
+    showBubbleMenu(chip.dataset.workerId, chip.dataset.fromZone, point.clientX, point.clientY);
   }, LONG_PRESS_MS);
 }
 
