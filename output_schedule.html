@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Tonight's Schedule — Aisle Freight Scheduler</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="assignment_engine.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --text-dim: #9aa1ae;
+    --accent: #4f8cff;
+    --accent-dim: #2a4a8a;
+    --green: #3fb950;
+    --amber: #d9a441;
+    --red: #e5534b;
+    --lock: #b366f0;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  h3 { font-size: 13px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 14px; }
+
+  .nav-row { display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .nav-row a.navlink {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 13px;
+    padding: 4px 0;
+    border-bottom: 2px solid transparent;
+  }
+  .nav-row a.navlink:hover { color: var(--text); }
+  .nav-row a.navlink.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+  }
+  button:hover { background: #262b36; border-color: #3a4150; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #3f7de0; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 18px;
+  }
+
+  .banner {
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    margin-bottom: 14px;
+    line-height: 1.6;
+  }
+  .banner.warn { background: #2a2013; border: 1px solid var(--amber); color: #f0cf8c; }
+  .banner.info { background: #172236; border: 1px solid var(--accent); color: #cfe0ff; }
+  .banner ul { margin: 4px 0 0 18px; padding: 0; }
+
+  .meta-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .meta-bar .meta-text { font-size: 12.5px; color: var(--text-dim); }
+  .meta-bar .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .zone-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .zone-row {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .zone-row.dept { border-color: #2b4030; }
+  .zone-row.understaffed { border-color: var(--red); }
+  .zone-row-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .zone-row-head .zone-name { font-size: 15px; font-weight: 700; }
+  .zone-row-head .zone-meta { font-size: 11.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+  .worker-names { font-size: 14px; line-height: 1.7; margin-bottom: 8px; }
+  .worker-names .empty-hint { color: var(--text-dim); font-style: italic; font-size: 13px; }
+  .worker-tag {
+    display: inline-block;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    margin: 2px 5px 2px 0;
+    font-size: 13px;
+  }
+  .worker-tag .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+  .dot-on_pace { background: var(--green); }
+  .dot-needs_improvement { background: var(--amber); }
+  .dot-new { background: var(--accent); }
+
+  .time-compare {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    background: var(--panel-2);
+    border-radius: 6px;
+  }
+  .time-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .time-compare b { color: var(--text); }
+  .time-flat { border-bottom: 1px dotted var(--text-dim); }
+  .time-adjusted { border-bottom: 1px dotted var(--accent); color: var(--accent); }
+  .time-actual { display: inline-flex; align-items: center; gap: 5px; }
+  .actual-input {
+    width: 60px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 6px;
+    border-radius: 5px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .delta-tag { font-size: 11px; padding: 2px 7px; border-radius: 5px; font-weight: 600; }
+  .delta-tag.over { background: #2a1a1a; color: #ff9b93; }
+  .delta-tag.under { background: #16321e; color: #9fe6ac; }
+  .delta-tag.ontime { background: #1c2430; color: var(--text-dim); }
+
+  .flags { margin-top: 4px; }
+  .flag-tag {
+    display: inline-block;
+    font-size: 10.5px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    margin: 2px 4px 0 0;
+  }
+  .flag-tag.bad { border-color: var(--red); color: #ffb4ae; }
+  .flag-tag.good { border-color: var(--green); color: #9fe6ac; }
+  .flag-tag.neutral { border-color: var(--accent); color: #cfe0ff; }
+
+  .empty-state { text-align: center; padding: 50px 20px; color: var(--text-dim); }
+  .empty-state a { color: var(--accent); }
+
+  .status-msg { font-size: 12px; color: var(--green); }
+
+  @media print {
+    body { background: #fff; color: #000; padding: 10px; }
+    .nav-row, .meta-bar .actions, button, .no-print { display: none !important; }
+    .panel, .zone-row, .time-compare { background: #fff; border-color: #999; }
+    .banner.warn { background: #fff8e6; border-color: #c99; color: #7a5a00; }
+    .banner.info { background: #eef4ff; border-color: #99b; color: #223; }
+    .worker-tag, .flag-tag { background: #fff; border-color: #999; color: #000; }
+    .time-compare b, .zone-row-head .zone-name, h1 { color: #000; }
+    .time-adjusted { color: #224; }
+    .zone-row { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+  <h1>Tonight's Schedule</h1>
+  <div class="subtitle">
+    Read-only printout of the finalized plan. To move people between zones, go back to Review &amp; Correct — this screen is for reading the plan and logging actual hours as the shift runs.
+  </div>
+
+  <div class="nav-row">
+    <a class="navlink" href="worker_roster.html">Worker Roster</a>
+    <a class="navlink" href="review_correct.html">Review &amp; Correct</a>
+    <a class="navlink active" href="output_schedule.html">Output Schedule</a>
+  </div>
+
+  <div id="emptyState" class="empty-state" style="display:none;">
+    No finalized schedule yet. Go to <a href="review_correct.html">Review &amp; Correct</a>, generate tonight's schedule, and hit "Finalize &amp; Save Schedule" — it'll show up here.
+  </div>
+
+  <div id="scheduleArea" style="display:none;">
+    <div id="conflictBanner" class="banner warn" style="display:none;"></div>
+    <div id="timeSummaryBanner" class="banner info" style="display:none;"></div>
+
+    <div class="meta-bar">
+      <span class="meta-text" id="metaText"></span>
+      <div class="actions no-print">
+        <span class="status-msg" id="statusMsg"></span>
+        <button id="btnPrint">Print</button>
+      </div>
+    </div>
+
+    <div class="zone-list" id="zoneList"></div>
+
+    <div class="panel" id="unassignedPanel" style="display:none;">
+      <h3>Not Assigned Tonight</h3>
+      <div id="unassignedList" class="worker-names"></div>
+    </div>
+  </div>
+
+<script>
+const AE = window.AssignmentEngine;
+const ROSTER_KEY = "aisleScheduler_workerRoster_v1";
+const NIGHT_KEY = "aisleScheduler_currentNight_v1";
+const FINALIZED_KEY = "aisleScheduler_finalizedSchedule_v1";
+
+const settings = AE.makeSettings({ casePerMinuteRate: 1.0 });
+
+let roster = [];
+let rosterById = {};
+let zones = [];
+let zoneById = {};
+let finalized = null; // the raw object from FINALIZED_KEY
+let assignments = {}; // finalized.assignments, mutated in place as actual hours are logged
+
+function loadRoster() {
+  const raw = localStorage.getItem(ROSTER_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw).map(AE.makeWorker);
+  } catch (e) {
+    return [];
+  }
+}
+
+function sortedByName(list) {
+  return [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+function flatHoursFor(zone, headcount) {
+  if (!zone || zone.estimationMethod === "fixed_duration") return null;
+  if (!headcount) return null;
+  return (zone.caseCount / settings.casePerMinuteRate / 60) / headcount;
+}
+
+function formatFinalizedAt(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  } catch (e) {
+    return iso;
+  }
+}
+
+function zonesContaining(workerId) {
+  return Object.entries(assignments).filter(([, a]) => a.workerIds.includes(workerId)).map(([zid]) => zid);
+}
+
+// ---------------------------------------------------------------------------
+// Load
+// ---------------------------------------------------------------------------
+function load() {
+  roster = loadRoster();
+  rosterById = Object.fromEntries(roster.map(w => [w.id, w]));
+
+  const raw = localStorage.getItem(FINALIZED_KEY);
+  if (!raw) {
+    document.getElementById("emptyState").style.display = "block";
+    document.getElementById("scheduleArea").style.display = "none";
+    return;
+  }
+  try {
+    finalized = JSON.parse(raw);
+  } catch (e) {
+    document.getElementById("emptyState").style.display = "block";
+    document.getElementById("scheduleArea").style.display = "none";
+    return;
+  }
+
+  zones = AE.makeZones(finalized.caseCounts || {});
+  zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
+  assignments = finalized.assignments || {};
+
+  // Backfill flatHours for schedules finalized before that field existed.
+  Object.entries(assignments).forEach(([zid, a]) => {
+    if (a.flatHours === undefined) {
+      a.flatHours = flatHoursFor(zoneById[zid], (a.workerIds || []).length);
+    }
+  });
+
+  document.getElementById("emptyState").style.display = "none";
+  document.getElementById("scheduleArea").style.display = "block";
+  renderAll();
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function flagLabel(flag) {
+  const labels = {
+    fixed_department: "fixed department",
+    fixed_department_backfill: "backfilled",
+    fixed_department_understaffed: "understaffed",
+    understaffed_below_pair: "below a pair",
+    incompatibility_conflict: "incompatibility conflict",
+    preference_override: "preference overridden",
+    reinforced: "reinforced",
+    likely_to_struggle_multiple_underperformers: "struggling — 2+ underperformers",
+    anchored_with_on_pace_worker: "anchored",
+    lent_on_pace_anchor: "lent an anchor",
+    lent_spare_hand: "lent a spare hand",
+    received_spare_hand: "received a spare hand",
+    stacked_sequential: "stacked sequentially",
+    stacked_sequential_donor: "donor for a stacked zone",
+    balanced_second_zone: "balanced (received)",
+    lent_to_heavier_zone: "balanced (lent out)",
+    over_cap: "over cap",
+    redistributed: "redistributed",
+  };
+  return labels[flag] || flag.replace(/_/g, " ");
+}
+
+function flagClass(flag) {
+  if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers"].includes(flag)) return "bad";
+  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand"].includes(flag)) return "good";
+  return "neutral";
+}
+
+function renderMeta() {
+  const el = document.getElementById("metaText");
+  const totalAssigned = new Set(Object.values(assignments).flatMap(a => a.workerIds)).size;
+  el.textContent = `Finalized ${formatFinalizedAt(finalized.finalizedAt)} · ${totalAssigned} worker(s) assigned across ${zones.length} zones`;
+}
+
+function renderConflicts() {
+  const el = document.getElementById("conflictBanner");
+  const conflicts = finalized.conflicts || [];
+  if (!conflicts.length) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  el.innerHTML = `<strong>Conflicts on record at finalize time:</strong><ul>${conflicts.map(c => `<li>${c}</li>`).join("")}</ul>`;
+}
+
+function renderTimeSummary() {
+  const el = document.getElementById("timeSummaryBanner");
+  const logged = Object.values(assignments).filter(a => a.actualHours != null && a.workerIds.length);
+  if (!logged.length) {
+    el.style.display = "none";
+    return;
+  }
+  const totalAdjusted = logged.reduce((s, a) => s + a.workloadHours, 0);
+  const totalActual = logged.reduce((s, a) => s + a.actualHours, 0);
+  const delta = totalActual - totalAdjusted;
+  const sign = delta > 0 ? "+" : "";
+  const verdict = delta > 0.05 ? "running behind the estimate" : delta < -0.05 ? "finishing ahead of the estimate" : "tracking the estimate closely";
+  el.style.display = "block";
+  el.innerHTML = `<strong>Adjusted vs actual (${logged.length} zone(s) logged so far):</strong> ${totalAdjusted.toFixed(2)}h adjusted estimate vs ${totalActual.toFixed(2)}h reported — ${sign}${delta.toFixed(2)}h, ${verdict}.`;
+}
+
+function renderZoneList() {
+  const list = document.getElementById("zoneList");
+  list.innerHTML = "";
+
+  for (const zone of zones) {
+    const a = assignments[zone.id];
+    if (!a) continue;
+    const isDept = zone.department === "dairy" || zone.department === "frozen";
+    const understaffed = zone.department !== "juice" && a.workerIds.length < 2;
+
+    const row = document.createElement("div");
+    row.className = "zone-row" + (isDept ? " dept" : "") + (understaffed ? " understaffed" : "");
+
+    const sortedWorkers = sortedByName(a.workerIds.map(id => rosterById[id]).filter(Boolean));
+    const namesHtml = sortedWorkers.length
+      ? sortedWorkers.map(w => `<span class="worker-tag"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("")
+      : '<span class="empty-hint">nobody assigned</span>';
+
+    const flagsHtml = (a.flags || []).length
+      ? `<div class="flags">${a.flags.map(f => `<span class="flag-tag ${flagClass(f)}">${flagLabel(f)}</span>`).join("")}</div>`
+      : "";
+
+    const hasActual = a.actualHours != null;
+    let deltaHtml = "";
+    if (hasActual) {
+      const delta = a.actualHours - a.workloadHours;
+      const cls = delta > 0.05 ? "over" : delta < -0.05 ? "under" : "ontime";
+      const sign = delta > 0 ? "+" : "";
+      deltaHtml = `<span class="delta-tag ${cls}">${sign}${delta.toFixed(2)}h vs adjusted</span>`;
+    }
+
+    const isFixed = zone.estimationMethod === "fixed_duration";
+    const flat = a.flatHours != null ? a.flatHours : flatHoursFor(zone, a.workerIds.length);
+    const estimateRowHtml = isFixed
+      ? `<span class="time-fixed" title="Fixed duration for this department">Fixed: <b>${a.workloadHours.toFixed(2)}h</b></span>`
+      : `
+        <span class="time-flat" title="Raw baseline: cases ÷ 60 ÷ headcount">Flat: <b>${flat != null ? flat.toFixed(2) + "h" : "—"}</b></span>
+        <span class="time-adjusted" title="Adjusted for this crew's efficiency mix">Adjusted: <b>${a.workloadHours.toFixed(2)}h</b></span>
+      `;
+
+    row.innerHTML = `
+      <div class="zone-row-head">
+        <span class="zone-name">${AE.zoneLabel(zone)}</span>
+        <span class="zone-meta">${zone.department}${zone.estimationMethod === "case_rate" ? ` · ${zone.caseCount} cases` : ""} · ${a.workerIds.length} assigned</span>
+      </div>
+      <div class="worker-names">${namesHtml}</div>
+      <div class="time-compare">
+        <div class="time-row">${estimateRowHtml}</div>
+        <div class="time-row">
+          <span class="time-actual">
+            Actual:
+            <input type="number" step="0.1" min="0" class="actual-input" data-zone-id="${zone.id}" value="${hasActual ? a.actualHours : ""}" placeholder="log after shift">h
+          </span>
+          ${deltaHtml}
+        </div>
+      </div>
+      ${flagsHtml}
+    `;
+    list.appendChild(row);
+  }
+}
+
+function renderUnassigned() {
+  const panel = document.getElementById("unassignedPanel");
+  const el = document.getElementById("unassignedList");
+  const assignedIds = new Set(Object.values(assignments).flatMap(a => a.workerIds));
+  const unassigned = sortedByName(roster.filter(w => w.active && !assignedIds.has(w.id)));
+  if (!unassigned.length) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "block";
+  el.innerHTML = unassigned.map(w => `<span class="worker-tag"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("");
+}
+
+function wireActualTimeInputs() {
+  document.querySelectorAll(".actual-input").forEach(input => {
+    input.addEventListener("change", () => {
+      const zid = input.dataset.zoneId;
+      const val = input.value.trim();
+      assignments[zid].actualHours = val === "" ? null : Math.max(0, parseFloat(val) || 0);
+      persist();
+      renderAll();
+      const status = document.getElementById("statusMsg");
+      status.textContent = "Saved";
+      setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+    });
+  });
+}
+
+// Keep the finalized snapshot AND the Review & Correct working state (if any)
+// in sync, so logging actual hours from your phone here doesn't get
+// clobbered if you reopen Review & Correct later.
+function persist() {
+  finalized.assignments = assignments;
+  localStorage.setItem(FINALIZED_KEY, JSON.stringify(finalized));
+
+  const nightRaw = localStorage.getItem(NIGHT_KEY);
+  if (!nightRaw) return;
+  try {
+    const night = JSON.parse(nightRaw);
+    if (night.assignments) {
+      Object.keys(assignments).forEach(zid => {
+        if (night.assignments[zid]) {
+          night.assignments[zid].actualHours = assignments[zid].actualHours;
+        }
+      });
+      localStorage.setItem(NIGHT_KEY, JSON.stringify(night));
+    }
+  } catch (e) {
+    // if the night state is malformed, don't let that block saving the
+    // finalized snapshot above — that one already succeeded
+  }
+}
+
+function renderAll() {
+  renderMeta();
+  renderConflicts();
+  renderTimeSummary();
+  renderZoneList();
+  renderUnassigned();
+  wireActualTimeInputs();
+}
+
+document.getElementById("btnPrint").addEventListener("click", () => window.print());
+
+load();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>

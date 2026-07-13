@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Worker Roster — Aisle Freight Scheduler</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --text-dim: #9aa1ae;
+    --accent: #4f8cff;
+    --accent-dim: #2a4a8a;
+    --green: #3fb950;
+    --amber: #d9a441;
+    --red: #e5534b;
+    --lock: #b366f0;
+    --lock-dim: #3a2a55;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 14px; }
+  .nav-row { display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .nav-row a.navlink { color: var(--text-dim); text-decoration: none; font-size: 13px; padding: 4px 0; border-bottom: 2px solid transparent; }
+  .nav-row a.navlink:hover { color: var(--text); }
+  .nav-row a.navlink.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: #262b36; border-color: #3a4150; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #3f7de0; }
+  button.danger { color: var(--red); }
+  button.danger:hover { background: #3a2323; border-color: var(--red); }
+  input[type="file"] { display: none; }
+
+  #warnings {
+    display: none;
+    background: #2a2013;
+    border: 1px solid var(--amber);
+    color: #f0cf8c;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    margin-bottom: 16px;
+    line-height: 1.6;
+  }
+  #warnings.show { display: block; }
+  #warnings strong { color: #ffdf9e; }
+
+  .table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1100px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--panel-2); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  tr.inactive { opacity: 0.45; }
+  .name-cell { font-weight: 600; }
+  .id-tag { color: var(--text-dim); font-size: 11px; font-weight: 400; display: block; }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    margin: 1px 3px 1px 0;
+  }
+  .pill-on_pace { background: #16321e; color: var(--green); }
+  .pill-needs_improvement { background: #332714; color: var(--amber); }
+  .pill-new { background: #17293a; color: var(--accent); }
+  .tag {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    margin: 1px 3px 1px 0;
+    color: var(--text-dim);
+  }
+  .tag.lock { border-color: var(--lock); color: var(--lock); }
+  .tag.incompat { border-color: var(--red); color: var(--red); }
+  .tag.dept { border-color: var(--green); color: var(--green); }
+  .muted { color: var(--text-dim); }
+  .row-actions button { padding: 5px 10px; font-size: 12px; }
+  .empty-state { text-align: center; padding: 40px; color: var(--text-dim); }
+
+  /* Modal */
+  .overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 16px;
+    overflow-y: auto;
+    z-index: 50;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 640px;
+    padding: 22px 24px 24px;
+  }
+  .modal h2 { margin: 0 0 4px; font-size: 16px; }
+  .modal .modal-sub { color: var(--text-dim); font-size: 12px; margin-bottom: 18px; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; }
+  .field .hint { font-size: 11px; color: var(--text-dim); margin-top: 5px; line-height: 1.5; }
+  input[type="text"], select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .checkbox-line { display: flex; align-items: center; gap: 8px; }
+  .checkbox-line input { width: auto; }
+  .checkbox-grid {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    max-height: 150px; overflow-y: auto;
+    padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2);
+  }
+  .chip-toggle {
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip-toggle.active { background: var(--accent-dim); border-color: var(--accent); color: #cfe0ff; }
+  .chip-toggle.active.incompat-mode { background: #3a1e1c; border-color: var(--red); color: #ffb4ae; }
+  .chip-toggle.active.lock-mode { background: var(--lock-dim); border-color: var(--lock); color: #ecd6ff; }
+  .note-inputs { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .note-inputs .note-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .note-inputs .note-row span { width: 90px; flex-shrink: 0; color: var(--text-dim); }
+  .modal-actions { display: flex; justify-content: space-between; margin-top: 22px; }
+  .modal-actions .right { display: flex; gap: 8px; }
+  .conflict-note { font-size: 11px; color: var(--amber); margin-top: 6px; }
+  .name-check-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .name-check-row input[type="checkbox"] { width: auto; flex-shrink: 0; }
+  .name-check-row input[type="text"] { flex: 1; }
+  .name-check-row .remove-row { flex-shrink: 0; padding: 4px 8px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+  <h1>Worker Roster</h1>
+  <div class="subtitle">Aisle Freight Scheduler — manage names, preferences, ratings, incompatibilities, and fixed-department assignments. Saved locally in this browser; use Export to keep a portable backup.</div>
+
+  <div class="nav-row">
+    <a class="navlink active" href="worker_roster.html">Worker Roster</a>
+    <a class="navlink" href="review_correct.html">Review &amp; Correct</a>
+    <a class="navlink" href="output_schedule.html">Output Schedule</a>
+  </div>
+
+  <div class="toolbar">
+    <button class="primary" id="btnAdd">+ Add Worker</button>
+    <button id="btnPhotoImport">📷 Import from Photo</button>
+    <button id="btnExport">Export JSON</button>
+    <button id="btnImport">Import JSON</button>
+    <input type="file" id="fileImport" accept="application/json">
+    <button id="btnReset">Reset to Sample Roster</button>
+  </div>
+
+  <div id="warnings"></div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Rating</th>
+          <th>Zone Prefs (1st→3rd)</th>
+          <th>Partners</th>
+          <th>Incompatible</th>
+          <th>Locked With</th>
+          <th>Department</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rosterBody"></tbody>
+    </table>
+    <div class="empty-state" id="emptyState" style="display:none;">No workers yet — add one to get started.</div>
+  </div>
+
+  <!-- Add/Edit modal -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h2 id="modalTitle">Add Worker</h2>
+      <div class="modal-sub" id="modalSub">Fields map directly to the Worker model used by the scheduling algorithm.</div>
+
+      <div class="field">
+        <label>Name</label>
+        <input type="text" id="fName" placeholder="e.g. Dal'nath">
+        <div class="hint" id="idPreview"></div>
+      </div>
+
+      <div class="row-2">
+        <div class="field">
+          <label>Production Rating</label>
+          <select id="fRating">
+            <option value="on_pace">On Pace</option>
+            <option value="needs_improvement">Needs Improvement</option>
+            <option value="new">New</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Status</label>
+          <div class="checkbox-line" style="margin-top:8px;">
+            <input type="checkbox" id="fActive" checked>
+            <label for="fActive" style="margin:0;">Active tonight (on the schedule)</label>
+          </div>
+          <div class="checkbox-line" style="margin-top:8px;">
+            <input type="checkbox" id="fUnsuitable">
+            <label for="fUnsuitable" style="margin:0;">Unsuitable for new hires (never paired with a `new` worker)</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Preferred Zones (top 3, ranked — leave later ones blank if fewer)</label>
+        <div class="row-3">
+          <select id="fZone1"></select>
+          <select id="fZone2"></select>
+          <select id="fZone3"></select>
+        </div>
+        <div class="hint">Not used for Dairy/Frozen — those are covered under Department below.</div>
+      </div>
+
+      <div class="field">
+        <label>Preferred Partners <span class="muted" style="font-weight:400;">(scoring bonus — doesn't have to be mutual)</span></label>
+        <div class="checkbox-grid" id="partnersGrid"></div>
+      </div>
+
+      <div class="field">
+        <label style="color: var(--lock);">🔒 Locked With <span style="font-weight:400; color: var(--lock);">(hard requirement — always kept together, never split — different from Preferred Partners above)</span></label>
+        <div class="checkbox-grid" id="lockedGrid" style="border-color: var(--lock);"></div>
+        <div class="conflict-note" id="lockConflictNote" style="display:none;"></div>
+      </div>
+
+      <div class="field">
+        <label>Incompatible With <span class="muted" style="font-weight:400;">(hard exclusion — never placed together)</span></label>
+        <div class="checkbox-grid" id="incompatGrid"></div>
+        <div class="note-inputs" id="incompatNotes"></div>
+      </div>
+
+      <div class="row-2">
+        <div class="field">
+          <label>Fixed Department <span class="muted" style="font-weight:400;">(covers it every night, no rotation)</span></label>
+          <select id="fFixedDept">
+            <option value="">— None —</option>
+            <option value="dairy">Dairy</option>
+            <option value="frozen">Frozen</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Department Rotation Pool <span class="muted" style="font-weight:400;">(takes turns)</span></label>
+          <select id="fRotationPool">
+            <option value="">— None —</option>
+            <option value="dairy">Dairy</option>
+            <option value="frozen">Frozen</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <div>
+          <button class="danger" id="btnDelete" style="display:none;">Delete Worker</button>
+        </div>
+        <div class="right">
+          <button id="btnCancel">Cancel</button>
+          <button class="primary" id="btnSave">Save Worker</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Photo import modal -->
+  <div class="overlay" id="photoOverlay">
+    <div class="modal">
+      <h2>Import Names from Photo</h2>
+      <div class="modal-sub">
+        Take a photo of a printed or handwritten roster sheet, or pick one from your gallery. This only reads names — ratings, partners, and everything else still need to be set per-worker afterward. Runs entirely on your device; nothing is uploaded anywhere.
+      </div>
+
+      <div class="field">
+        <input type="file" id="photoFileInput" accept="image/*" capture="environment">
+      </div>
+
+      <div id="photoStatus" class="hint" style="display:none; margin-bottom:12px;"></div>
+
+      <div id="photoReviewWrap" style="display:none;">
+        <div class="field">
+          <label>Detected lines <span class="muted" style="font-weight:400;">(uncheck anything that isn't a name, fix typos, or add missed ones below)</span></label>
+          <div class="checkbox-grid" id="nameReviewList" style="flex-direction:column; align-items:stretch; max-height:280px;"></div>
+        </div>
+        <div class="field">
+          <button type="button" id="btnAddBlankNameRow" style="font-size:12px;">+ Add a line manually</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <div></div>
+        <div class="right">
+          <button id="btnPhotoCancel">Cancel</button>
+          <button class="primary" id="btnPhotoAdd" style="display:none;">Add Checked as New Workers</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Zone list mirrors ZONE_DEFS in assignment_engine.py (A-I only — J/K are
+// Dairy/Frozen, which are set via the Department fields instead of a zone
+// preference).
+// ---------------------------------------------------------------------------
+const ZONES = [
+  { id: "A", label: "Aisle 2 & 3" },
+  { id: "B", label: "Aisle 4 & 5" },
+  { id: "C", label: "Aisle 6 & 7" },
+  { id: "D", label: "Aisle 8 & 9" },
+  { id: "E", label: "Aisle 10 & 11" },
+  { id: "F", label: "Aisle 12 & 13" },
+  { id: "G", label: "Aisle 14 & 15" },
+  { id: "H", label: "Aisle 19" },
+  { id: "I", label: "Juice (20, 21 & 22)" },
+];
+const ZONE_LABEL = Object.fromEntries(ZONES.map(z => [z.id, z.label]));
+
+const STORAGE_KEY = "aisleScheduler_workerRoster_v1";
+
+// Mirrors wid() in demo.py — used only to seed a friendly, stable id when a
+// worker is first created. Editing the name afterward does NOT change the
+// id, so existing partner/incompatible/locked references never break.
+function slugify(name) {
+  return name.trim().toLowerCase().replace(/['’]/g, "").replace(/\s+/g, "-");
+}
+
+function uniqueId(name, existing) {
+  const base = slugify(name) || "worker";
+  let id = base, n = 2;
+  while (existing.some(w => w.id === id)) {
+    id = `${base}-${n}`;
+    n++;
+  }
+  return id;
+}
+
+// ---------------------------------------------------------------------------
+// Sample roster — the real 24-person crew from demo.py's ROSTER_DEFS, so
+// this loads with recognizable data instead of an empty table.
+// ---------------------------------------------------------------------------
+function sampleRoster() {
+  const w = (id, name, extra) => Object.assign({
+    id, name, active: true,
+    preferredZones: [], preferredPartners: [], incompatibleWith: [],
+    incompatibilityNotes: {}, productionRating: "on_pace",
+    unsuitableForNewHires: false, lockedWith: [],
+    fixedDepartment: null, departmentRotationPool: null,
+  }, extra);
+
+  return [
+    w("pella", "Pella", { preferredPartners: ["cosette"] }),
+    w("dalnath", "Dal'nath", {
+      preferredPartners: ["sheara", "cosette"],
+      incompatibleWith: ["vayne"],
+      incompatibilityNotes: { vayne: "absolutely hate each other, never mix" },
+    }),
+    w("sheara", "Sheara", {}),
+    w("raven", "Raven", { preferredPartners: ["mira", "cosette"] }),
+    w("cosette", "Cosette", {}),
+    w("mira", "Mira", {}),
+    w("teuris", "Teu'ris", {
+      incompatibleWith: ["vayne"],
+      incompatibilityNotes: { vayne: "won't work with him at all" },
+      departmentRotationPool: "dairy",
+    }),
+    w("vayne", "Vayne", { preferredPartners: ["skyler", "nedylene"], unsuitableForNewHires: true }),
+    w("nedylene", "Nedylene", { preferredPartners: ["teuris"], departmentRotationPool: "dairy" }),
+    w("clare", "Clare", { preferredPartners: ["avicel"] }),
+    w("avicel", "Avicel", { preferredPartners: ["clare"] }),
+    w("danarys", "Danarys", { preferredPartners: ["drogo"], fixedDepartment: "frozen" }),
+    w("drogo", "Drogo", { preferredPartners: ["danarys"], fixedDepartment: "frozen" }),
+    w("lisette", "Lisette", { preferredPartners: ["lydia"] }),
+    w("skyler", "Skyler", { preferredPartners: ["vayne"] }),
+    w("lydia", "Lydia", { preferredPartners: ["lisette"] }),
+    w("charlotte", "Charlotte", { productionRating: "new", departmentRotationPool: "dairy" }),
+    w("niemira", "Niemira", { productionRating: "new" }),
+    w("iga", "Iga", { productionRating: "new", departmentRotationPool: "dairy" }),
+    w("cori", "Cori", { productionRating: "new" }),
+    w("josephine", "Josephine", { productionRating: "new" }),
+    w("olivia", "Olivia", { productionRating: "new" }),
+    w("ariel", "Ariel", { productionRating: "new" }),
+    w("caliope", "Caliope", { productionRating: "new" }),
+  ];
+}
+
+let roster = [];
+let editingId = null; // null = adding new
+
+function loadRoster() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try { return JSON.parse(raw); } catch (e) { /* fall through to sample */ }
+  }
+  return sampleRoster();
+}
+
+function saveRoster() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(roster));
+}
+
+function workerById(id) { return roster.find(w => w.id === id); }
+
+// ---------------------------------------------------------------------------
+// Validation — surfaces contradictions honestly instead of silently
+// allowing them, matching how the algorithm itself treats conflicting data
+// (e.g. assign_night refuses to force a locked pair that's also marked
+// incompatible, rather than guessing which one wins).
+// ---------------------------------------------------------------------------
+function computeWarnings() {
+  const warnings = [];
+  for (const worker of roster) {
+    for (const otherId of worker.lockedWith) {
+      if (worker.incompatibleWith.includes(otherId)) {
+        const other = workerById(otherId);
+        warnings.push(`${worker.name} is both locked with and incompatible with ${other ? other.name : otherId} — the algorithm will refuse to force this pairing and leave them apart, flagged rather than silently resolved.`);
+      }
+    }
+    if (worker.fixedDepartment && worker.departmentRotationPool) {
+      warnings.push(`${worker.name} has both a Fixed Department and a Rotation Pool set — only Fixed Department will apply (they cover it every night, no rotation).`);
+    }
+    const missingPartners = worker.preferredPartners.filter(id => !workerById(id));
+    const missingIncompat = worker.incompatibleWith.filter(id => !workerById(id));
+    const missingLocked = worker.lockedWith.filter(id => !workerById(id));
+    if (missingPartners.length || missingIncompat.length || missingLocked.length) {
+      warnings.push(`${worker.name} references a worker that no longer exists on the roster — those relationships won't do anything until fixed.`);
+    }
+  }
+  return warnings;
+}
+
+function renderWarnings() {
+  const el = document.getElementById("warnings");
+  const warnings = computeWarnings();
+  if (!warnings.length) { el.classList.remove("show"); el.innerHTML = ""; return; }
+  el.classList.add("show");
+  el.innerHTML = "<strong>Data conflicts found:</strong><br>" + warnings.map(w => "• " + w).join("<br>");
+}
+
+// ---------------------------------------------------------------------------
+// Table rendering
+// ---------------------------------------------------------------------------
+function ratingLabel(r) {
+  return { on_pace: "On Pace", needs_improvement: "Needs Improvement", new: "New" }[r] || r;
+}
+
+function sortedByName(list) {
+  return [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+function renderTable() {
+  const body = document.getElementById("rosterBody");
+  const empty = document.getElementById("emptyState");
+  body.innerHTML = "";
+  empty.style.display = roster.length ? "none" : "block";
+
+  for (const worker of sortedByName(roster)) {
+    const tr = document.createElement("tr");
+    if (!worker.active) tr.classList.add("inactive");
+
+    const zonesText = worker.preferredZones.length
+      ? worker.preferredZones.map(z => ZONE_LABEL[z] || z).join(" → ")
+      : '<span class="muted">—</span>';
+
+    const partnersHtml = worker.preferredPartners.length
+      ? worker.preferredPartners.map(id => `<span class="tag">${workerById(id) ? workerById(id).name : id}</span>`).join("")
+      : '<span class="muted">—</span>';
+
+    const incompatHtml = worker.incompatibleWith.length
+      ? worker.incompatibleWith.map(id => `<span class="tag incompat">${workerById(id) ? workerById(id).name : id}</span>`).join("")
+      : '<span class="muted">—</span>';
+
+    const lockedHtml = worker.lockedWith.length
+      ? worker.lockedWith.map(id => `<span class="tag lock">${workerById(id) ? workerById(id).name : id}</span>`).join("")
+      : '<span class="muted">—</span>';
+
+    let deptHtml = '<span class="muted">—</span>';
+    if (worker.fixedDepartment) deptHtml = `<span class="tag dept">${worker.fixedDepartment === "dairy" ? "Dairy" : "Frozen"} (every night)</span>`;
+    else if (worker.departmentRotationPool) deptHtml = `<span class="tag dept">${worker.departmentRotationPool === "dairy" ? "Dairy" : "Frozen"} (rotation)</span>`;
+
+    tr.innerHTML = `
+      <td class="name-cell">${worker.name}${worker.active ? "" : ' <span class="muted">(inactive)</span>'}<span class="id-tag">${worker.id}</span></td>
+      <td><span class="pill pill-${worker.productionRating}">${ratingLabel(worker.productionRating)}</span>${worker.unsuitableForNewHires ? '<div class="hint" style="margin-top:4px;">Unsuitable for new hires</div>' : ""}</td>
+      <td>${zonesText}</td>
+      <td>${partnersHtml}</td>
+      <td>${incompatHtml}</td>
+      <td>${lockedHtml}</td>
+      <td>${deptHtml}</td>
+      <td class="row-actions">
+        <button data-edit="${worker.id}">Edit</button>
+      </td>
+    `;
+    body.appendChild(tr);
+  }
+
+  body.querySelectorAll("[data-edit]").forEach(btn => {
+    btn.addEventListener("click", () => openModal(btn.getAttribute("data-edit")));
+  });
+
+  renderWarnings();
+}
+
+// ---------------------------------------------------------------------------
+// Modal — add / edit
+// ---------------------------------------------------------------------------
+function populateZoneSelects() {
+  ["fZone1", "fZone2", "fZone3"].forEach(id => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = '<option value="">— None —</option>' + ZONES.map(z => `<option value="${z.id}">${z.label}</option>`).join("");
+  });
+}
+
+function chipGrid(containerId, otherWorkers, selectedIds, mode) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = "";
+  if (!otherWorkers.length) {
+    el.innerHTML = '<span class="muted" style="font-size:12px;">No other workers on the roster yet.</span>';
+    return;
+  }
+  otherWorkers.forEach(w => {
+    const chip = document.createElement("div");
+    chip.className = "chip-toggle" + (selectedIds.includes(w.id) ? " active " + (mode === "incompat" ? "incompat-mode" : mode === "lock" ? "lock-mode" : "") : "");
+    chip.textContent = w.name;
+    chip.dataset.id = w.id;
+    chip.addEventListener("click", () => {
+      const idx = selectedIds.indexOf(w.id);
+      if (idx >= 0) selectedIds.splice(idx, 1);
+      else selectedIds.push(w.id);
+      chip.classList.toggle("active");
+      chip.classList.toggle("incompat-mode", mode === "incompat" && chip.classList.contains("active"));
+      chip.classList.toggle("lock-mode", mode === "lock" && chip.classList.contains("active"));
+      if (mode === "incompat") renderIncompatNotes(selectedIds);
+      if (mode === "lock" || mode === "incompat") checkLockConflict();
+    });
+    el.appendChild(chip);
+  });
+}
+
+let workingPartners = [], workingLocked = [], workingIncompat = [], workingIncompatNotes = {};
+
+function renderIncompatNotes(selectedIds) {
+  const el = document.getElementById("incompatNotes");
+  el.innerHTML = "";
+  selectedIds.forEach(id => {
+    const other = workerById(id);
+    const row = document.createElement("div");
+    row.className = "note-row";
+    row.innerHTML = `<span>${other ? other.name : id}:</span>`;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "reason (optional, informational only)";
+    input.value = workingIncompatNotes[id] || "";
+    input.addEventListener("input", () => { workingIncompatNotes[id] = input.value; });
+    row.appendChild(input);
+    el.appendChild(row);
+  });
+}
+
+function checkLockConflict() {
+  const note = document.getElementById("lockConflictNote");
+  const overlap = workingLocked.filter(id => workingIncompat.includes(id));
+  if (overlap.length) {
+    const names = overlap.map(id => workerById(id) ? workerById(id).name : id).join(", ");
+    note.style.display = "block";
+    note.textContent = `Conflict: ${names} is set as both Locked With and Incompatible With — the algorithm won't force this pairing.`;
+  } else {
+    note.style.display = "none";
+  }
+}
+
+function openModal(id) {
+  editingId = id;
+  const isEdit = !!id;
+  const worker = isEdit ? workerById(id) : null;
+
+  document.getElementById("modalTitle").textContent = isEdit ? `Edit ${worker.name}` : "Add Worker";
+  document.getElementById("modalSub").textContent = isEdit
+    ? `id: ${worker.id} — set once at creation, doesn't change if you rename them.`
+    : "Fields map directly to the Worker model used by the scheduling algorithm.";
+
+  document.getElementById("fName").value = worker ? worker.name : "";
+  document.getElementById("fRating").value = worker ? worker.productionRating : "on_pace";
+  document.getElementById("fActive").checked = worker ? worker.active : true;
+  document.getElementById("fUnsuitable").checked = worker ? worker.unsuitableForNewHires : false;
+  document.getElementById("fFixedDept").value = worker ? (worker.fixedDepartment || "") : "";
+  document.getElementById("fRotationPool").value = worker ? (worker.departmentRotationPool || "") : "";
+
+  populateZoneSelects();
+  const zones = worker ? worker.preferredZones : [];
+  document.getElementById("fZone1").value = zones[0] || "";
+  document.getElementById("fZone2").value = zones[1] || "";
+  document.getElementById("fZone3").value = zones[2] || "";
+
+  document.getElementById("idPreview").textContent = isEdit
+    ? ""
+    : "id will be generated from the name automatically (e.g. \"Dal'nath\" → dalnath).";
+
+  const others = sortedByName(roster.filter(w => w.id !== id));
+  workingPartners = worker ? [...worker.preferredPartners] : [];
+  workingLocked = worker ? [...worker.lockedWith] : [];
+  workingIncompat = worker ? [...worker.incompatibleWith] : [];
+  workingIncompatNotes = worker ? { ...worker.incompatibilityNotes } : {};
+
+  chipGrid("partnersGrid", others, workingPartners, "partner");
+  chipGrid("lockedGrid", others, workingLocked, "lock");
+  chipGrid("incompatGrid", others, workingIncompat, "incompat");
+  renderIncompatNotes(workingIncompat);
+  checkLockConflict();
+
+  document.getElementById("btnDelete").style.display = isEdit ? "inline-block" : "none";
+  document.getElementById("overlay").classList.add("show");
+}
+
+function closeModal() {
+  document.getElementById("overlay").classList.remove("show");
+  editingId = null;
+}
+
+function saveWorker() {
+  const name = document.getElementById("fName").value.trim();
+  if (!name) { alert("Name is required."); return; }
+
+  const zones = [
+    document.getElementById("fZone1").value,
+    document.getElementById("fZone2").value,
+    document.getElementById("fZone3").value,
+  ].filter(Boolean);
+
+  const fixedDepartment = document.getElementById("fFixedDept").value || null;
+  const departmentRotationPool = fixedDepartment ? null : (document.getElementById("fRotationPool").value || null);
+
+  // prune notes to only currently-selected incompatible ids
+  const prunedNotes = {};
+  workingIncompat.forEach(id => { if (workingIncompatNotes[id]) prunedNotes[id] = workingIncompatNotes[id]; });
+
+  const payload = {
+    name,
+    active: document.getElementById("fActive").checked,
+    productionRating: document.getElementById("fRating").value,
+    unsuitableForNewHires: document.getElementById("fUnsuitable").checked,
+    preferredZones: zones,
+    preferredPartners: [...workingPartners],
+    lockedWith: [...workingLocked],
+    incompatibleWith: [...workingIncompat],
+    incompatibilityNotes: prunedNotes,
+    fixedDepartment,
+    departmentRotationPool,
+  };
+
+  if (editingId) {
+    const worker = workerById(editingId);
+    Object.assign(worker, payload);
+  } else {
+    const id = uniqueId(name, roster);
+    roster.push(Object.assign({ id }, payload));
+  }
+
+  saveRoster();
+  renderTable();
+  closeModal();
+}
+
+function deleteWorker() {
+  if (!editingId) return;
+  const worker = workerById(editingId);
+  if (!confirm(`Delete ${worker.name}? This can't be undone (relationships pointing to them will just stop resolving).`)) return;
+  roster = roster.filter(w => w.id !== editingId);
+  saveRoster();
+  renderTable();
+  closeModal();
+}
+
+// ---------------------------------------------------------------------------
+// Export / Import / Reset
+// ---------------------------------------------------------------------------
+function exportRoster() {
+  const blob = new Blob([JSON.stringify(roster, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "worker_roster.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importRoster(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!Array.isArray(data)) throw new Error("not an array");
+      roster = data;
+      saveRoster();
+      renderTable();
+    } catch (e) {
+      alert("Couldn't read that file as a worker roster JSON export.");
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ---------------------------------------------------------------------------
+// Photo import (OCR) — reads a photo of a roster sheet client-side via
+// Tesseract.js and turns it into a checklist of candidate names. Nothing
+// leaves the device; the OCR library itself is the only thing pulled from
+// a CDN, and only when this feature is actually used.
+// ---------------------------------------------------------------------------
+let tesseractLoadPromise = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  if (tesseractLoadPromise) return tesseractLoadPromise;
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Couldn't load the OCR library — check your connection and try again."));
+    document.head.appendChild(script);
+  });
+  return tesseractLoadPromise;
+}
+
+// Splits raw OCR text into name candidates: one per line, list-marker
+// prefixes stripped, blank/too-short/no-letters lines dropped (those are
+// almost always OCR noise, not names). Deliberately permissive otherwise —
+// this feeds a checklist the person reviews, not a direct write.
+function extractNameCandidatesFromOCRText(rawText) {
+  return rawText
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .map(line => line.replace(/^[\-\*•\d]+[\.\)]?\s*/, ""))
+    .map(line => line.trim())
+    .filter(line => {
+      if (!line) return false;
+      if (line.length < 2) return false;
+      if (!/[A-Za-z]/.test(line)) return false;
+      return true;
+    });
+}
+
+function renderNameReviewList(names) {
+  const wrap = document.getElementById("nameReviewList");
+  wrap.innerHTML = "";
+  names.forEach(name => addNameReviewRow(name, true));
+}
+
+function addNameReviewRow(name, checked) {
+  const wrap = document.getElementById("nameReviewList");
+  const row = document.createElement("div");
+  row.className = "name-check-row";
+  row.innerHTML = `
+    <input type="checkbox" ${checked ? "checked" : ""}>
+    <input type="text" value="${name.replace(/"/g, "&quot;")}">
+    <button type="button" class="remove-row">Remove</button>
+  `;
+  row.querySelector(".remove-row").addEventListener("click", () => row.remove());
+  wrap.appendChild(row);
+}
+
+function closePhotoModal() {
+  document.getElementById("photoOverlay").classList.remove("show");
+  document.getElementById("photoStatus").style.display = "none";
+  document.getElementById("photoReviewWrap").style.display = "none";
+  document.getElementById("btnPhotoAdd").style.display = "none";
+  document.getElementById("photoFileInput").value = "";
+  document.getElementById("nameReviewList").innerHTML = "";
+}
+
+function setPhotoStatus(text) {
+  const el = document.getElementById("photoStatus");
+  el.style.display = text ? "block" : "none";
+  el.textContent = text;
+}
+
+async function handlePhotoFile(file) {
+  if (!file) return;
+  setPhotoStatus("Loading OCR library…");
+  document.getElementById("photoReviewWrap").style.display = "none";
+  document.getElementById("btnPhotoAdd").style.display = "none";
+  try {
+    await loadTesseract();
+  } catch (err) {
+    setPhotoStatus(err.message);
+    return;
+  }
+  setPhotoStatus("Reading photo… this can take a little while on a phone.");
+  try {
+    const result = await window.Tesseract.recognize(file, "eng", {
+      logger: m => {
+        if (m.status === "recognizing text" && typeof m.progress === "number") {
+          setPhotoStatus(`Reading photo… ${Math.round(m.progress * 100)}%`);
+        }
+      },
+    });
+    const names = extractNameCandidatesFromOCRText(result.data.text || "");
+    if (!names.length) {
+      setPhotoStatus("Couldn't find anything that looked like a list of names. You can still add lines manually below, or try a clearer photo.");
+    } else {
+      setPhotoStatus(`Found ${names.length} candidate line(s) — review below before adding.`);
+    }
+    renderNameReviewList(names);
+    document.getElementById("photoReviewWrap").style.display = "block";
+    document.getElementById("btnPhotoAdd").style.display = "inline-block";
+  } catch (err) {
+    setPhotoStatus("OCR failed: " + err.message);
+  }
+}
+
+function addCheckedNamesAsWorkers() {
+  const rows = [...document.querySelectorAll("#nameReviewList .name-check-row")];
+  const namesToAdd = rows
+    .filter(row => row.querySelector('input[type="checkbox"]').checked)
+    .map(row => row.querySelector('input[type="text"]').value.trim())
+    .filter(Boolean);
+
+  if (!namesToAdd.length) {
+    alert("Nothing checked — check at least one name, or cancel.");
+    return;
+  }
+
+  namesToAdd.forEach(name => {
+    const id = uniqueId(name, roster);
+    roster.push({
+      id, name, active: true,
+      preferredZones: [], preferredPartners: [], incompatibleWith: [],
+      incompatibilityNotes: {}, productionRating: "on_pace",
+      unsuitableForNewHires: false, lockedWith: [],
+      fixedDepartment: null, departmentRotationPool: null,
+    });
+  });
+
+  saveRoster();
+  renderTable();
+  closePhotoModal();
+  alert(`Added ${namesToAdd.length} worker(s). Ratings, partners, and everything else still default to blank — edit each one to fill those in.`);
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+document.getElementById("btnAdd").addEventListener("click", () => openModal(null));
+document.getElementById("btnCancel").addEventListener("click", closeModal);
+document.getElementById("btnSave").addEventListener("click", saveWorker);
+document.getElementById("btnDelete").addEventListener("click", deleteWorker);
+document.getElementById("overlay").addEventListener("click", (e) => { if (e.target.id === "overlay") closeModal(); });
+
+document.getElementById("btnExport").addEventListener("click", exportRoster);
+document.getElementById("btnImport").addEventListener("click", () => document.getElementById("fileImport").click());
+document.getElementById("fileImport").addEventListener("change", (e) => {
+  if (e.target.files[0]) importRoster(e.target.files[0]);
+  e.target.value = "";
+});
+document.getElementById("btnReset").addEventListener("click", () => {
+  if (!confirm("Reset to the sample 24-person roster? This replaces everything currently on the table.")) return;
+  roster = sampleRoster();
+  saveRoster();
+  renderTable();
+});
+
+document.getElementById("btnPhotoImport").addEventListener("click", () => {
+  document.getElementById("photoOverlay").classList.add("show");
+});
+document.getElementById("btnPhotoCancel").addEventListener("click", closePhotoModal);
+document.getElementById("photoOverlay").addEventListener("click", (e) => { if (e.target.id === "photoOverlay") closePhotoModal(); });
+document.getElementById("photoFileInput").addEventListener("change", (e) => {
+  if (e.target.files[0]) handlePhotoFile(e.target.files[0]);
+});
+document.getElementById("btnAddBlankNameRow").addEventListener("click", () => {
+  document.getElementById("photoReviewWrap").style.display = "block";
+  document.getElementById("btnPhotoAdd").style.display = "inline-block";
+  addNameReviewRow("", false);
+});
+document.getElementById("btnPhotoAdd").addEventListener("click", addCheckedNamesAsWorkers);
+
+roster = loadRoster();
+renderTable();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>

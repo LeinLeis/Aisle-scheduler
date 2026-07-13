@@ -1,0 +1,1189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Review &amp; Correct — Aisle Freight Scheduler</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="assignment_engine.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --text-dim: #9aa1ae;
+    --accent: #4f8cff;
+    --accent-dim: #2a4a8a;
+    --green: #3fb950;
+    --amber: #d9a441;
+    --red: #e5534b;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  h3 { font-size: 13px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 14px; }
+  a.navlink { color: var(--accent); text-decoration: none; font-size: 13px; }
+  a.navlink:hover { text-decoration: underline; }
+  .nav-row { display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .nav-row a.navlink { color: var(--text-dim); padding: 4px 0; border-bottom: 2px solid transparent; }
+  .nav-row a.navlink:hover { color: var(--text); text-decoration: none; }
+  .nav-row a.navlink.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+  }
+  button:hover { background: #262b36; border-color: #3a4150; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #3f7de0; }
+  button.small { padding: 4px 9px; font-size: 12px; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 18px;
+  }
+
+  .setup-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .setup-field label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+  .setup-field input {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+
+  .banner {
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    margin-bottom: 14px;
+    line-height: 1.6;
+  }
+  .banner.warn { background: #2a2013; border: 1px solid var(--amber); color: #f0cf8c; }
+  .banner.info { background: #172236; border: 1px solid var(--accent); color: #cfe0ff; }
+  .banner ul { margin: 4px 0 0 18px; padding: 0; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .zone-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    min-height: 120px;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .zone-card.dept { border-color: #2b4030; }
+  .zone-card.dragover { border-color: var(--accent); background: #182036; }
+  .zone-card.understaffed { border-color: var(--red); }
+  .zone-card .zone-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .zone-card .zone-name { font-weight: 700; font-size: 13px; }
+  .zone-card .zone-meta { font-size: 11px; color: var(--text-dim); }
+  .zone-card .zone-stats { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+  .zone-card .zone-stats b { color: var(--text); }
+  .time-compare {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    background: var(--panel-2);
+    border-radius: 6px;
+  }
+  .time-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .time-compare b { color: var(--text); }
+  .time-flat { cursor: help; border-bottom: 1px dotted var(--text-dim); }
+  .time-adjusted { cursor: help; border-bottom: 1px dotted var(--accent); color: var(--accent); }
+  .time-compare .time-actual { display: inline-flex; align-items: center; gap: 4px; }
+  .actual-input {
+    width: 52px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 3px 5px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-family: inherit;
+  }
+  .delta-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 5px; font-weight: 600; }
+  .delta-tag.over { background: #2a1a1a; color: #ff9b93; }
+  .delta-tag.under { background: #16321e; color: #9fe6ac; }
+  .delta-tag.ontime { background: #1c2430; color: var(--text-dim); }
+  .drop-zone { min-height: 40px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px 4px 8px;
+    font-size: 12px;
+    margin: 2px 4px 2px 0;
+    cursor: grab;
+    user-select: none;
+  }
+  .chip:active { cursor: grabbing; }
+  .chip.dragging { opacity: 0.4; }
+  .chip.conflict { border-color: var(--red); background: #2a1a1a; }
+  .chip.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79,140,255,0.4); background: var(--accent-dim); }
+  .zone-card.tap-target { border-color: var(--accent); cursor: pointer; }
+  .zone-card.tap-target:active { background: #182036; }
+  #unassignedTray.tap-target { border-color: var(--accent); border-style: solid; cursor: pointer; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot-on_pace { background: var(--green); }
+  .dot-needs_improvement { background: var(--amber); }
+  .dot-new { background: var(--accent); }
+  .chip .hrs { color: var(--text-dim); font-size: 10.5px; }
+  .flags { margin-top: 6px; }
+  .flag-tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    margin: 2px 4px 0 0;
+  }
+  .flag-tag.bad { border-color: var(--red); color: #ffb4ae; }
+  .flag-tag.good { border-color: var(--green); color: #9fe6ac; }
+  .flag-tag.neutral { border-color: var(--accent); color: #cfe0ff; }
+
+  .side-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .side-panels { grid-template-columns: 1fr; } }
+
+  #unassignedTray {
+    min-height: 50px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 10px;
+  }
+  #unassignedTray.dragover { border-color: var(--accent); background: #182036; }
+  .empty-hint { color: var(--text-dim); font-size: 12px; font-style: italic; }
+
+  .suggestion-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .suggestion-row:last-child { border-bottom: none; }
+  .suggestion-row .desc { color: var(--text); }
+  .suggestion-row .desc b { color: var(--accent); }
+  .suggestion-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .notes-list { font-size: 12.5px; line-height: 1.7; color: var(--text-dim); }
+  .notes-list li { margin-bottom: 4px; }
+
+  .footer-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+  .status-msg { font-size: 12px; color: var(--green); margin-left: auto; align-self: center; }
+
+  .overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 16px;
+    overflow-y: auto;
+    z-index: 50;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 640px;
+    padding: 22px 24px 24px;
+  }
+  .modal h2 { margin: 0 0 4px; font-size: 16px; }
+  .modal .modal-sub { color: var(--text-dim); font-size: 12px; margin-bottom: 18px; line-height: 1.5; }
+  .modal .field { margin-bottom: 16px; }
+  .modal .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; }
+  .modal input[type="file"] {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .modal .hint { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .modal-actions { display: flex; justify-content: flex-end; margin-top: 22px; gap: 8px; }
+  .count-review-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
+  .count-review-row .zone-label { width: 130px; flex-shrink: 0; color: var(--text-dim); }
+  .count-review-row input[type="number"] {
+    width: 90px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 5px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .count-review-row .source-line { font-size: 11px; color: var(--text-dim); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+</style>
+</head>
+<body>
+
+  <h1>Review &amp; Correct</h1>
+  <div class="subtitle">
+    Generate tonight's schedule from the real algorithm, then override before finalizing — drag with a mouse, or on touch: tap a worker, then tap the zone you want to move them to.
+  </div>
+
+  <div class="nav-row">
+    <a class="navlink" href="worker_roster.html">Worker Roster</a>
+    <a class="navlink active" href="review_correct.html">Review &amp; Correct</a>
+    <a class="navlink" href="output_schedule.html">Output Schedule</a>
+  </div>
+
+  <div class="panel" id="setupPanel">
+    <h3>Tonight's Case Counts</h3>
+    <div class="setup-grid" id="caseCountGrid"></div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <button class="primary" id="btnGenerate">Generate Schedule</button>
+      <button id="btnCasePhotoImport">📷 Import from Photo</button>
+      <span id="rosterStatus" style="font-size:12px; color:var(--text-dim);"></span>
+    </div>
+  </div>
+
+  <!-- Case-count photo import modal -->
+  <div class="overlay" id="casePhotoOverlay">
+    <div class="modal">
+      <h2>Import Case Counts from Photo</h2>
+      <div class="modal-sub">
+        Photo of tonight's receiving/case-count sheet. This reads it entirely on your device and does a best-effort guess at which number belongs to which aisle — always double-check the review table below before applying, OCR on handwriting especially can get it wrong.
+      </div>
+
+      <div class="field">
+        <input type="file" id="casePhotoFileInput" accept="image/*" capture="environment">
+      </div>
+
+      <div id="casePhotoStatus" class="hint" style="display:none; margin-bottom:12px;"></div>
+
+      <div id="caseReviewWrap" style="display:none;">
+        <div class="field">
+          <label>Review before applying</label>
+          <div id="caseReviewList"></div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btnCasePhotoCancel">Cancel</button>
+        <button class="primary" id="btnCasePhotoApply" style="display:none;">Apply to Case Counts</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="noRosterBanner" class="banner warn" style="display:none;">
+    No worker roster found. <a class="navlink" href="worker_roster.html">Open the Worker Roster screen</a> to add workers first,
+    or <button class="small" id="btnLoadSample" style="margin-left:6px;">load the sample 24-person roster</button> to try this screen out now.
+  </div>
+
+  <div id="resultsArea" style="display:none;">
+
+    <div id="conflictBanner" class="banner warn" style="display:none;"></div>
+    <div id="notesBanner" class="banner info" style="display:none;"></div>
+    <div id="timeSummaryBanner" class="banner info" style="display:none;"></div>
+    <div id="tapMoveHint" class="banner info" style="display:none;"></div>
+
+    <div class="board" id="board"></div>
+
+    <div class="side-panels">
+      <div class="panel">
+        <h3>Unassigned Tonight</h3>
+        <div id="unassignedTray" class="drop-zone"></div>
+      </div>
+      <div class="panel">
+        <h3>Redistribution Suggestions</h3>
+        <div id="suggestions"></div>
+      </div>
+    </div>
+
+    <div class="footer-actions">
+      <span class="status-msg" id="statusMsg"></span>
+      <button id="btnRegenerate">Regenerate (discard edits)</button>
+      <button id="btnExport">Export JSON</button>
+      <button class="primary" id="btnFinalize">Finalize &amp; Save Schedule</button>
+    </div>
+  </div>
+
+<script>
+const AE = window.AssignmentEngine;
+const ROSTER_KEY = "aisleScheduler_workerRoster_v1";
+const NIGHT_KEY = "aisleScheduler_currentNight_v1";
+const FINALIZED_KEY = "aisleScheduler_finalizedSchedule_v1";
+
+const GROCERY_ZONE_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"];
+const settings = AE.makeSettings({ casePerMinuteRate: 1.0 });
+
+let roster = [];       // AE.makeWorker-normalized, from the roster screen's localStorage
+let rosterById = {};
+let zones = [];        // current zones (with tonight's case counts)
+let zoneById = {};
+let assignments = {};  // zoneId -> { workerIds, workloadHours, flags }  (same shape AE uses)
+let generationNotes = [];
+let hasGenerated = false;
+
+// ---------------------------------------------------------------------------
+// Roster loading
+// ---------------------------------------------------------------------------
+function loadRoster() {
+  const raw = localStorage.getItem(ROSTER_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.map(AE.makeWorker);
+  } catch (e) {
+    return [];
+  }
+}
+
+function refreshRosterState() {
+  roster = loadRoster();
+  rosterById = Object.fromEntries(roster.map(w => [w.id, w]));
+  const status = document.getElementById("rosterStatus");
+  const noRosterBanner = document.getElementById("noRosterBanner");
+  if (!roster.length) {
+    status.textContent = "";
+    noRosterBanner.style.display = "block";
+    document.getElementById("btnGenerate").disabled = true;
+  } else {
+    const activeCount = roster.filter(w => w.active).length;
+    status.textContent = `${activeCount} active worker(s) loaded from the roster (${roster.length} total).`;
+    noRosterBanner.style.display = "none";
+    document.getElementById("btnGenerate").disabled = false;
+  }
+}
+
+document.getElementById("btnLoadSample").addEventListener("click", () => {
+  // mirrors worker_roster.html's sampleRoster() so this screen is usable
+  // standalone without visiting the Roster screen first
+  const w = (id, name, extra) => Object.assign({
+    id, name, active: true, preferredZones: [], preferredPartners: [], incompatibleWith: [],
+    incompatibilityNotes: {}, productionRating: "on_pace", unsuitableForNewHires: false,
+    lockedWith: [], fixedDepartment: null, departmentRotationPool: null,
+  }, extra);
+  const sample = [
+    w("pella", "Pella", { preferredPartners: ["cosette"] }),
+    w("dalnath", "Dal'nath", { preferredPartners: ["sheara", "cosette"], incompatibleWith: ["vayne"], incompatibilityNotes: { vayne: "absolutely hate each other, never mix" } }),
+    w("sheara", "Sheara", {}),
+    w("raven", "Raven", { preferredPartners: ["mira", "cosette"] }),
+    w("cosette", "Cosette", {}),
+    w("mira", "Mira", {}),
+    w("teuris", "Teu'ris", { incompatibleWith: ["vayne"], incompatibilityNotes: { vayne: "won't work with him at all" }, departmentRotationPool: "dairy" }),
+    w("vayne", "Vayne", { preferredPartners: ["skyler", "nedylene"], unsuitableForNewHires: true }),
+    w("nedylene", "Nedylene", { preferredPartners: ["teuris"], departmentRotationPool: "dairy" }),
+    w("clare", "Clare", { preferredPartners: ["avicel"] }),
+    w("avicel", "Avicel", { preferredPartners: ["clare"] }),
+    w("danarys", "Danarys", { preferredPartners: ["drogo"], fixedDepartment: "frozen" }),
+    w("drogo", "Drogo", { preferredPartners: ["danarys"], fixedDepartment: "frozen" }),
+    w("lisette", "Lisette", { preferredPartners: ["lydia"] }),
+    w("skyler", "Skyler", { preferredPartners: ["vayne"] }),
+    w("lydia", "Lydia", { preferredPartners: ["lisette"] }),
+    w("charlotte", "Charlotte", { productionRating: "new", departmentRotationPool: "dairy" }),
+    w("niemira", "Niemira", { productionRating: "new" }),
+    w("iga", "Iga", { productionRating: "new", departmentRotationPool: "dairy" }),
+    w("cori", "Cori", { productionRating: "new" }),
+    w("josephine", "Josephine", { productionRating: "new" }),
+    w("olivia", "Olivia", { productionRating: "new" }),
+    w("ariel", "Ariel", { productionRating: "new" }),
+    w("caliope", "Caliope", { productionRating: "new" }),
+  ];
+  localStorage.setItem(ROSTER_KEY, JSON.stringify(sample));
+  refreshRosterState();
+});
+
+// ---------------------------------------------------------------------------
+// Case count inputs
+// ---------------------------------------------------------------------------
+function buildCaseCountGrid() {
+  const grid = document.getElementById("caseCountGrid");
+  grid.innerHTML = "";
+  // Deliberately left blank rather than pre-filled with a shared placeholder
+  // number — every grocery zone defaulting to the same "250" made it look
+  // like a coincidence that they all had equal volume, when really nobody
+  // had entered tonight's real counts yet. Blank + a visible placeholder
+  // makes it obvious this needs real input per zone.
+  AE.ZONE_DEFS.filter(z => z.department === "grocery" || z.department === "juice").forEach(z => {
+    const field = document.createElement("div");
+    field.className = "setup-field";
+    const isJuice = z.department === "juice";
+    field.innerHTML = `
+      <label>${AE.zoneLabel(z)}${isJuice ? " (case count doesn't affect juice's fixed time)" : ""}</label>
+      <input type="number" min="0" step="1" id="cc_${z.id}" placeholder="e.g. ${isJuice ? 350 : 200 + Math.round(Math.random() * 300)}" value="">
+    `;
+    grid.appendChild(field);
+  });
+}
+
+function readCaseCounts() {
+  const counts = {};
+  const missing = [];
+  AE.ZONE_DEFS.filter(z => z.department === "grocery" || z.department === "juice").forEach(z => {
+    const el = document.getElementById(`cc_${z.id}`);
+    if (el.value.trim() === "") missing.push(AE.zoneLabel(z));
+    counts[z.id] = Math.max(0, parseInt(el.value, 10) || 0);
+  });
+  return { counts, missing };
+}
+
+// ---------------------------------------------------------------------------
+// Case-count photo import (OCR) — reads a photo of tonight's receiving
+// sheet and best-effort guesses which case count belongs to which aisle.
+// Always routed through a review table before touching the real inputs;
+// sheet formats vary too much to trust blindly.
+// ---------------------------------------------------------------------------
+const AISLE_NUMBER_TO_ZONE = {
+  2: "A", 3: "A", 4: "B", 5: "B", 6: "C", 7: "C", 8: "D", 9: "D",
+  10: "E", 11: "E", 12: "F", 13: "F", 14: "G", 15: "G", 19: "H",
+  20: "I", 21: "I", 22: "I",
+};
+
+let caseTesseractLoadPromise = null;
+function loadTesseractForCaseCounts() {
+  if (window.Tesseract) return Promise.resolve();
+  if (caseTesseractLoadPromise) return caseTesseractLoadPromise;
+  caseTesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Couldn't load the OCR library — check your connection and try again."));
+    document.head.appendChild(script);
+  });
+  return caseTesseractLoadPromise;
+}
+
+// For each line, the last number on the line is treated as the case count;
+// any earlier number that matches a known aisle number maps to that zone.
+// Best-effort — the review table is where the person catches what this gets
+// wrong, not this function.
+function parseCaseCountsFromOCRText(rawText) {
+  const results = {};
+  const lines = rawText.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const numberMatches = [...line.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
+    if (numberMatches.length < 2) continue;
+    const caseCount = numberMatches[numberMatches.length - 1];
+    const aisleNumbers = numberMatches.slice(0, -1);
+    const matchedZones = new Set();
+    aisleNumbers.forEach(n => { if (AISLE_NUMBER_TO_ZONE[n]) matchedZones.add(AISLE_NUMBER_TO_ZONE[n]); });
+    matchedZones.forEach(zid => { results[zid] = { count: caseCount, sourceLine: line }; });
+  }
+  return results;
+}
+
+function renderCaseReviewList(parsed) {
+  const wrap = document.getElementById("caseReviewList");
+  wrap.innerHTML = "";
+  AE.ZONE_DEFS.filter(z => z.department === "grocery" || z.department === "juice").forEach(z => {
+    const match = parsed[z.id];
+    const row = document.createElement("div");
+    row.className = "count-review-row";
+    row.dataset.zoneId = z.id;
+    row.innerHTML = `
+      <span class="zone-label">${AE.zoneLabel(z)}</span>
+      <input type="number" min="0" step="1" value="${match ? match.count : ""}" placeholder="not detected">
+      <span class="source-line">${match ? match.sourceLine.replace(/</g, "&lt;") : ""}</span>
+    `;
+    wrap.appendChild(row);
+  });
+}
+
+function closeCasePhotoModal() {
+  document.getElementById("casePhotoOverlay").classList.remove("show");
+  document.getElementById("casePhotoStatus").style.display = "none";
+  document.getElementById("caseReviewWrap").style.display = "none";
+  document.getElementById("btnCasePhotoApply").style.display = "none";
+  document.getElementById("casePhotoFileInput").value = "";
+  document.getElementById("caseReviewList").innerHTML = "";
+}
+
+function setCasePhotoStatus(text) {
+  const el = document.getElementById("casePhotoStatus");
+  el.style.display = text ? "block" : "none";
+  el.textContent = text;
+}
+
+async function handleCasePhotoFile(file) {
+  if (!file) return;
+  setCasePhotoStatus("Loading OCR library…");
+  document.getElementById("caseReviewWrap").style.display = "none";
+  document.getElementById("btnCasePhotoApply").style.display = "none";
+  try {
+    await loadTesseractForCaseCounts();
+  } catch (err) {
+    setCasePhotoStatus(err.message);
+    return;
+  }
+  setCasePhotoStatus("Reading photo… this can take a little while on a phone.");
+  try {
+    const result = await window.Tesseract.recognize(file, "eng", {
+      logger: m => {
+        if (m.status === "recognizing text" && typeof m.progress === "number") {
+          setCasePhotoStatus(`Reading photo… ${Math.round(m.progress * 100)}%`);
+        }
+      },
+    });
+    const parsed = parseCaseCountsFromOCRText(result.data.text || "");
+    const foundCount = Object.keys(parsed).length;
+    setCasePhotoStatus(
+      foundCount
+        ? `Matched ${foundCount} of 9 zones automatically — check every row below, especially any left blank.`
+        : "Couldn't confidently match any aisle numbers. Enter counts manually below, or try a clearer photo."
+    );
+    renderCaseReviewList(parsed);
+    document.getElementById("caseReviewWrap").style.display = "block";
+    document.getElementById("btnCasePhotoApply").style.display = "inline-block";
+  } catch (err) {
+    setCasePhotoStatus("OCR failed: " + err.message);
+  }
+}
+
+function applyCaseReviewToGrid() {
+  const rows = [...document.querySelectorAll("#caseReviewList .count-review-row")];
+  let appliedCount = 0;
+  rows.forEach(row => {
+    const zid = row.dataset.zoneId;
+    const val = row.querySelector('input[type="number"]').value.trim();
+    if (val === "") return;
+    const el = document.getElementById(`cc_${zid}`);
+    if (el) {
+      el.value = val;
+      appliedCount++;
+    }
+  });
+  closeCasePhotoModal();
+  if (appliedCount) {
+    alert(`Applied ${appliedCount} case count(s). Anything left blank in the review table was left untouched here too.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generation
+// ---------------------------------------------------------------------------
+function generateSchedule() {
+  if (!roster.length) return;
+  const { counts: caseCounts, missing } = readCaseCounts();
+  if (missing.length && !confirm(`No case count entered for: ${missing.join(", ")}. They'll be treated as 0 cases (essentially idle). Generate anyway?`)) {
+    return;
+  }
+  zones = AE.makeZones(caseCounts);
+  zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
+
+  // Work on fresh copies so re-generating never carries over stale
+  // hoursAssignedTonight/zonesAssignedTonight bookkeeping from a prior run.
+  const workingWorkers = roster.map(w => AE.makeWorker(w));
+  const result = AE.assignNight(workingWorkers, zones, settings);
+
+  assignments = {};
+  for (const [zid, a] of Object.entries(result.assignments)) {
+    // Three numbers, three different questions:
+    //   flatHours     — "Flat": cases ÷ 60 ÷ headcount. A naive baseline
+    //                   that assumes everyone works at the same rate.
+    //                   Ignores who's actually assigned.
+    //   workloadHours — "Adjusted": the algorithm's real planning number,
+    //                   same flat total but divided across the crew's
+    //                   actual efficiency mix (on pace / needs improvement
+    //                   / new). This is what "the algorithm expects."
+    //   actualHours   — "Actual": filled in by the supervisor after the
+    //                   shift, from what the crew reports. Starts empty.
+    // Comparing Adjusted vs Actual is the data the design doc always meant
+    // to use for eventually calibrating the placeholder efficiency factors
+    // away from guesses.
+    assignments[zid] = {
+      workerIds: [...a.workerIds],
+      flatHours: flatHoursFor(zoneById[zid], a.workerIds.length),
+      workloadHours: a.workloadHours,
+      actualHours: null,
+      flags: [...a.flags],
+    };
+  }
+  generationNotes = [...result.notes];
+  hasGenerated = true;
+
+  document.getElementById("resultsArea").style.display = "block";
+  document.getElementById("btnRegenerate").style.display = "inline-block";
+  saveNightState();
+  renderAll();
+}
+
+document.getElementById("btnGenerate").addEventListener("click", generateSchedule);
+document.getElementById("btnRegenerate").addEventListener("click", () => {
+  if (!confirm("Regenerate from scratch? Any manual drag-and-drop changes will be discarded.")) return;
+  generateSchedule();
+});
+
+document.getElementById("btnCasePhotoImport").addEventListener("click", () => {
+  document.getElementById("casePhotoOverlay").classList.add("show");
+});
+document.getElementById("btnCasePhotoCancel").addEventListener("click", closeCasePhotoModal);
+document.getElementById("casePhotoOverlay").addEventListener("click", (e) => { if (e.target.id === "casePhotoOverlay") closeCasePhotoModal(); });
+document.getElementById("casePhotoFileInput").addEventListener("change", (e) => {
+  if (e.target.files[0]) handleCasePhotoFile(e.target.files[0]);
+});
+document.getElementById("btnCasePhotoApply").addEventListener("click", applyCaseReviewToGrid);
+
+// ---------------------------------------------------------------------------
+// Derived state helpers
+// ---------------------------------------------------------------------------
+// The "Flat" number: cases ÷ 60 ÷ headcount, no efficiency weighting at
+// all — just raw case volume split evenly across however many people are
+// standing in the zone. Null for fixed-duration zones (Juice/Dairy/Frozen),
+// where there's no case count driving the time in the first place.
+function flatHoursFor(zone, headcount) {
+  if (!zone || zone.estimationMethod === "fixed_duration") return null;
+  if (!headcount) return null;
+  return (zone.caseCount / settings.casePerMinuteRate / 60) / headcount;
+}
+
+function recomputeZone(zid) {
+  const zone = zoneById[zid];
+  const group = assignments[zid].workerIds.map(id => rosterById[id]).filter(Boolean);
+  assignments[zid].workloadHours = AE.workloadHoursFor(zone, group, settings);
+  assignments[zid].flatHours = flatHoursFor(zone, group.length);
+}
+
+function zonesContaining(workerId) {
+  return Object.entries(assignments).filter(([, a]) => a.workerIds.includes(workerId)).map(([zid]) => zid);
+}
+
+function workerTotalHoursTonight(workerId) {
+  return zonesContaining(workerId).reduce((sum, zid) => sum + assignments[zid].workloadHours, 0);
+}
+
+function sortedByName(list) {
+  return [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+function unassignedWorkers() {
+  return sortedByName(roster.filter(w => w.active && zonesContaining(w.id).length === 0));
+}
+
+function computeLiveConflicts() {
+  const conflicts = [];
+  for (const [zid, a] of Object.entries(assignments)) {
+    const group = a.workerIds.map(id => rosterById[id]).filter(Boolean);
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        if (AE.isIncompatible(group[i], group[j])) {
+          conflicts.push(`${group[i].name} and ${group[j].name} are marked incompatible but are both in ${AE.zoneLabel(zoneById[zid])} — this was a manual override, not something the algorithm would have done.`);
+        }
+      }
+    }
+  }
+  const seen = new Set();
+  for (const w of roster) {
+    if (!w.active) continue;
+    for (const otherId of w.lockedWith) {
+      const other = rosterById[otherId];
+      if (!other || !other.active) continue;
+      const key = [w.id, otherId].sort().join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const wZones = zonesContaining(w.id);
+      const otherZones = zonesContaining(otherId);
+      const shareZone = wZones.some(z => otherZones.includes(z));
+      if (!shareZone && (wZones.length || otherZones.length)) {
+        conflicts.push(`${w.name} and ${other.name} are set as "Locked With" on the roster (a hard requirement) but are currently split apart. If this should just be a soft preference instead, change it to "Preferred Partners" on the Worker Roster screen.`);
+      }
+    }
+  }
+  return conflicts;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function chipHtml(worker, zid) {
+  // zid is "unassigned" for chips rendered into the unassigned tray — there's
+  // no zone-level group to check a conflict against in that case.
+  const conflictHere = zid !== "unassigned" && assignments[zid] && assignments[zid].workerIds.some(otherId => {
+    if (otherId === worker.id) return false;
+    const other = rosterById[otherId];
+    return other && AE.isIncompatible(worker, other);
+  });
+  const total = workerTotalHoursTonight(worker.id);
+  const stackedElsewhere = zonesContaining(worker.id).length > 1;
+  return `
+    <span class="chip${conflictHere ? " conflict" : ""}" draggable="true" data-worker-id="${worker.id}" data-from-zone="${zid}" title="${worker.name}${conflictHere ? " — incompatibility conflict in this zone" : ""}">
+      <span class="dot dot-${worker.productionRating}"></span>
+      ${worker.name}
+      <span class="hrs">${total.toFixed(1)}h${stackedElsewhere ? " (multi-zone)" : ""}</span>
+    </span>
+  `;
+}
+
+function flagLabel(flag) {
+  const labels = {
+    fixed_department: "fixed department",
+    fixed_department_backfill: "backfilled",
+    fixed_department_understaffed: "understaffed",
+    understaffed_below_pair: "below a pair",
+    incompatibility_conflict: "incompatibility conflict",
+    preference_override: "preference overridden",
+    reinforced: "reinforced",
+    likely_to_struggle_multiple_underperformers: "struggling — 2+ underperformers",
+    anchored_with_on_pace_worker: "anchored",
+    lent_on_pace_anchor: "lent an anchor",
+    lent_spare_hand: "lent a spare hand",
+    received_spare_hand: "received a spare hand",
+    stacked_sequential: "stacked sequentially",
+    stacked_sequential_donor: "donor for a stacked zone",
+    balanced_second_zone: "balanced (received)",
+    lent_to_heavier_zone: "balanced (lent out)",
+    over_cap: "over cap",
+    redistributed: "redistributed",
+  };
+  return labels[flag] || flag.replace(/_/g, " ");
+}
+
+function flagClass(flag) {
+  if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers"].includes(flag)) return "bad";
+  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand"].includes(flag)) return "good";
+  return "neutral";
+}
+
+function renderBoard() {
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  for (const zone of zones) {
+    const a = assignments[zone.id];
+    const target = AE.targetGroupSize(zone, settings);
+    const isDept = zone.department === "dairy" || zone.department === "frozen";
+    const understaffed = zone.department !== "juice" && a.workerIds.length < 2;
+
+    const card = document.createElement("div");
+    card.className = "zone-card" + (isDept ? " dept" : "") + (understaffed ? " understaffed" : "");
+    card.dataset.zoneId = zone.id;
+
+    const sortedWorkerIds = [...a.workerIds].sort((wid1, wid2) => {
+      const n1 = rosterById[wid1] ? rosterById[wid1].name : wid1;
+      const n2 = rosterById[wid2] ? rosterById[wid2].name : wid2;
+      return n1.localeCompare(n2, undefined, { sensitivity: "base" });
+    });
+    const chips = sortedWorkerIds.map(wid => rosterById[wid] ? chipHtml(rosterById[wid], zone.id) : "").join("");
+    const flagsHtml = a.flags.length
+      ? `<div class="flags">${a.flags.map(f => `<span class="flag-tag ${flagClass(f)}">${flagLabel(f)}</span>`).join("")}</div>`
+      : "";
+
+    const hasActual = a.actualHours != null;
+    let deltaHtml = "";
+    if (hasActual) {
+      const delta = a.actualHours - a.workloadHours;
+      const cls = delta > 0.05 ? "over" : delta < -0.05 ? "under" : "ontime";
+      const sign = delta > 0 ? "+" : "";
+      deltaHtml = `<span class="delta-tag ${cls}">${sign}${delta.toFixed(2)}h vs adjusted</span>`;
+    }
+
+    const isFixed = zone.estimationMethod === "fixed_duration";
+    const flat = a.flatHours != null ? a.flatHours : flatHoursFor(zone, a.workerIds.length);
+    const estimateRowHtml = isFixed
+      ? `<span class="time-fixed" title="Fixed duration for this department, regardless of crew size">Fixed: <b>${a.workloadHours.toFixed(2)}h</b></span>`
+      : `
+        <span class="time-flat" title="Raw baseline: cases ÷ 60 ÷ headcount. Ignores who's actually assigned.">Flat: <b>${flat != null ? flat.toFixed(2) + "h" : "—"}</b></span>
+        <span class="time-adjusted" title="The algorithm's real estimate: same case total, divided across this crew's actual efficiency mix (on pace / needs improvement / new).">Adjusted: <b>${a.workloadHours.toFixed(2)}h</b></span>
+      `;
+
+    card.innerHTML = `
+      <div class="zone-head">
+        <span class="zone-name">${AE.zoneLabel(zone)}</span>
+        <span class="zone-meta">${zone.department}</span>
+      </div>
+      <div class="zone-stats">
+        <b>${a.workerIds.length}</b> of target <b>${target}</b>
+        ${zone.estimationMethod === "case_rate" ? ` &nbsp;·&nbsp; ${zone.caseCount} cases` : ""}
+      </div>
+      <div class="time-compare">
+        <div class="time-row">${estimateRowHtml}</div>
+        <div class="time-row">
+          <span class="time-actual">
+            Actual:
+            <input type="number" step="0.1" min="0" class="actual-input" data-zone-id="${zone.id}" value="${hasActual ? a.actualHours : ""}" placeholder="log after shift">h
+          </span>
+          ${deltaHtml}
+        </div>
+      </div>
+      <div class="drop-zone" data-zone-id="${zone.id}">${chips || '<span class="empty-hint">drop a worker here</span>'}</div>
+      ${flagsHtml}
+    `;
+    board.appendChild(card);
+  }
+  wireDragAndDrop();
+  updateSelectionUI();
+  wireActualTimeInputs();
+}
+
+function wireActualTimeInputs() {
+  document.querySelectorAll(".actual-input").forEach(input => {
+    input.addEventListener("change", () => {
+      const zid = input.dataset.zoneId;
+      const val = input.value.trim();
+      assignments[zid].actualHours = val === "" ? null : Math.max(0, parseFloat(val) || 0);
+      afterChange();
+    });
+    // don't lose focus/keystrokes on every render — only update the
+    // in-memory value on blur/enter (the "change" event above), not "input"
+  });
+}
+
+function renderUnassigned() {
+  const tray = document.getElementById("unassignedTray");
+  const workers = unassignedWorkers();
+  tray.innerHTML = workers.length
+    ? workers.map(w => chipHtml(w, "unassigned")).join("")
+    : '<span class="empty-hint">everyone active has a zone tonight</span>';
+}
+
+function renderSuggestions() {
+  const el = document.getElementById("suggestions");
+  const unassigned = unassignedWorkers();
+  if (!unassigned.length) {
+    el.innerHTML = '<span class="empty-hint">no unassigned workers right now</span>';
+    return;
+  }
+  const suggestions = AE.suggestRedistribution(unassigned, zones, assignments, rosterById, settings);
+  if (!suggestions.length) {
+    el.innerHTML = '<span class="empty-hint">no eligible zone to suggest for the current unassigned worker(s)</span>';
+    return;
+  }
+  el.innerHTML = suggestions
+    .map(
+      s => `
+      <div class="suggestion-row">
+        <span class="desc"><b>${s.workerName}</b> → ${s.zoneLabel} <span style="color:var(--text-dim);">(projected ${s.projectedWorkloadHours.toFixed(2)}h)</span></span>
+        <span class="suggestion-actions">
+          <button class="small primary" data-accept-worker="${s.workerId}" data-accept-zone="${s.zoneId}">Accept</button>
+          <button class="small" data-decline>Decline</button>
+        </span>
+      </div>`
+    )
+    .join("");
+
+  el.querySelectorAll("[data-accept-worker]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const wid = btn.getAttribute("data-accept-worker");
+      const zid = btn.getAttribute("data-accept-zone");
+      assignments[zid].workerIds.push(wid);
+      recomputeZone(zid);
+      afterChange();
+    });
+  });
+  el.querySelectorAll("[data-decline]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      // suggestions are recomputed live every render, so declining just
+      // means "don't act on this one" — nothing to persist, just re-render
+      renderSuggestions();
+    });
+  });
+}
+
+function renderNotes() {
+  const el = document.getElementById("notesBanner");
+  if (!generationNotes.length) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  el.innerHTML = `<strong>Notes from generation:</strong><ul>${generationNotes.map(n => `<li>${n}</li>`).join("")}</ul>`;
+}
+
+function renderConflicts() {
+  const el = document.getElementById("conflictBanner");
+  const conflicts = computeLiveConflicts();
+  if (!conflicts.length) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  el.innerHTML = `<strong>Manual override conflicts:</strong><ul>${conflicts.map(c => `<li>${c}</li>`).join("")}</ul>`;
+}
+
+function renderTimeSummary() {
+  const el = document.getElementById("timeSummaryBanner");
+  const logged = Object.values(assignments).filter(a => a.actualHours != null && a.workerIds.length);
+  if (!logged.length) {
+    el.style.display = "none";
+    return;
+  }
+  const totalAdjusted = logged.reduce((s, a) => s + a.workloadHours, 0);
+  const totalActual = logged.reduce((s, a) => s + a.actualHours, 0);
+  const delta = totalActual - totalAdjusted;
+  const sign = delta > 0 ? "+" : "";
+  const verdict = delta > 0.05 ? "running behind the estimate" : delta < -0.05 ? "finishing ahead of the estimate" : "tracking the estimate closely";
+  el.style.display = "block";
+  el.innerHTML = `<strong>Adjusted vs actual (${logged.length} zone(s) logged so far):</strong> ${totalAdjusted.toFixed(2)}h adjusted estimate vs ${totalActual.toFixed(2)}h reported — ${sign}${delta.toFixed(2)}h, ${verdict}. This is exactly the data the placeholder efficiency numbers need to get calibrated with real values.`;
+}
+
+function renderAll() {
+  renderBoard();
+  renderUnassigned();
+  renderSuggestions();
+  renderNotes();
+  renderConflicts();
+  renderTimeSummary();
+  wireDragAndDrop(); // board re-wires itself, but the unassigned tray needs it too
+  updateSelectionUI(); // re-apply selected/tap-target classes to the freshly-rendered elements
+}
+
+function afterChange() {
+  saveNightState();
+  renderAll();
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop
+// ---------------------------------------------------------------------------
+function wireDragAndDrop() {
+  document.querySelectorAll(".chip[draggable]").forEach(chip => {
+    chip.addEventListener("dragstart", e => {
+      e.dataTransfer.setData("text/plain", JSON.stringify({ workerId: chip.dataset.workerId, fromZone: chip.dataset.fromZone }));
+      chip.classList.add("dragging");
+    });
+    chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
+  });
+
+  const dropTargets = [...document.querySelectorAll(".drop-zone"), document.getElementById("unassignedTray")];
+  dropTargets.forEach(target => {
+    const highlightEl = target.closest(".zone-card") || target;
+    target.addEventListener("dragover", e => {
+      e.preventDefault();
+      highlightEl.classList.add("dragover");
+    });
+    target.addEventListener("dragleave", () => highlightEl.classList.remove("dragover"));
+    target.addEventListener("drop", e => {
+      e.preventDefault();
+      highlightEl.classList.remove("dragover");
+      let data;
+      try { data = JSON.parse(e.dataTransfer.getData("text/plain")); } catch (err) { return; }
+      const toZone = target.dataset.zoneId || "unassigned";
+      moveWorker(data.workerId, data.fromZone, toZone);
+    });
+  });
+}
+
+function moveWorker(workerId, fromZone, toZone) {
+  if (fromZone === toZone) return;
+  if (fromZone !== "unassigned" && assignments[fromZone]) {
+    const idx = assignments[fromZone].workerIds.indexOf(workerId);
+    if (idx >= 0) assignments[fromZone].workerIds.splice(idx, 1);
+    recomputeZone(fromZone);
+  }
+  if (toZone !== "unassigned" && assignments[toZone]) {
+    if (!assignments[toZone].workerIds.includes(workerId)) {
+      assignments[toZone].workerIds.push(workerId);
+    }
+    recomputeZone(toZone);
+  }
+  afterChange();
+}
+
+// ---------------------------------------------------------------------------
+// Tap-to-move — the touch-friendly alternative to drag-and-drop. Native
+// HTML5 drag-and-drop barely works on phones (iOS Safari in particular
+// mostly ignores it on touch), so this gives the same "move a worker"
+// action via two taps instead of a drag gesture. Works alongside
+// drag-and-drop rather than replacing it — desktop mouse users still drag.
+// ---------------------------------------------------------------------------
+let selectedWorkerId = null;
+let selectedFromZone = null;
+
+function selectWorkerForMove(workerId, fromZone) {
+  if (selectedWorkerId === workerId) {
+    // tapping the already-selected chip again cancels the move
+    selectedWorkerId = null;
+    selectedFromZone = null;
+  } else {
+    selectedWorkerId = workerId;
+    selectedFromZone = fromZone;
+  }
+  updateSelectionUI();
+}
+
+function handleZoneTapTarget(toZone) {
+  if (!selectedWorkerId) return;
+  const workerId = selectedWorkerId;
+  const fromZone = selectedFromZone;
+  selectedWorkerId = null;
+  selectedFromZone = null;
+  moveWorker(workerId, fromZone, toZone); // moveWorker() re-renders, which clears the (already-null) selection UI too
+}
+
+function updateSelectionUI() {
+  document.querySelectorAll(".chip[data-worker-id]").forEach(chip => {
+    chip.classList.toggle("selected", chip.dataset.workerId === selectedWorkerId);
+  });
+  const active = !!selectedWorkerId;
+  document.querySelectorAll(".zone-card").forEach(card => card.classList.toggle("tap-target", active));
+  const tray = document.getElementById("unassignedTray");
+  if (tray) tray.classList.toggle("tap-target", active);
+
+  const hint = document.getElementById("tapMoveHint");
+  if (active) {
+    const worker = rosterById[selectedWorkerId];
+    hint.style.display = "block";
+    hint.textContent = `Moving ${worker ? worker.name : "worker"} — tap a zone (or "Unassigned Tonight") to place them there, or tap them again to cancel.`;
+  } else {
+    hint.style.display = "none";
+  }
+}
+
+// Wired ONCE via event delegation on document, rather than re-attaching a
+// listener to every chip/card on every render. Chips and zone cards get
+// torn down and recreated on every renderBoard() call, so per-element
+// listeners would either go stale or (if re-attached each render) stack up
+// and double-fire — delegation sidesteps both problems.
+function initTapToMove() {
+  document.addEventListener("click", e => {
+    const chip = e.target.closest(".chip[data-worker-id]");
+    if (chip) {
+      selectWorkerForMove(chip.dataset.workerId, chip.dataset.fromZone);
+      return;
+    }
+    const card = e.target.closest(".zone-card");
+    if (card) {
+      handleZoneTapTarget(card.dataset.zoneId);
+      return;
+    }
+    if (e.target.closest("#unassignedTray")) {
+      handleZoneTapTarget("unassigned");
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+function saveNightState() {
+  const state = {
+    caseCounts: readCaseCounts().counts,
+    assignments,
+    notes: generationNotes,
+    savedAt: new Date().toISOString(),
+  };
+  localStorage.setItem(NIGHT_KEY, JSON.stringify(state));
+}
+
+function loadNightState() {
+  const raw = localStorage.getItem(NIGHT_KEY);
+  if (!raw) return false;
+  try {
+    const state = JSON.parse(raw);
+    const caseCounts = state.caseCounts || {};
+    Object.keys(caseCounts).forEach(zid => {
+      const el = document.getElementById(`cc_${zid}`);
+      if (el) el.value = caseCounts[zid];
+    });
+    zones = AE.makeZones(caseCounts);
+    zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
+    assignments = state.assignments || {};
+    generationNotes = state.notes || [];
+    hasGenerated = Object.keys(assignments).length > 0;
+    return hasGenerated;
+  } catch (e) {
+    return false;
+  }
+}
+
+document.getElementById("btnExport").addEventListener("click", () => {
+  const state = { caseCounts: readCaseCounts().counts, assignments, notes: generationNotes, savedAt: new Date().toISOString() };
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "tonights_schedule.json";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById("btnFinalize").addEventListener("click", () => {
+  const conflicts = computeLiveConflicts();
+  if (conflicts.length && !confirm(`There are ${conflicts.length} unresolved conflict(s) from manual overrides. Finalize anyway?`)) {
+    return;
+  }
+  const finalized = {
+    caseCounts: readCaseCounts().counts,
+    assignments,
+    notes: generationNotes,
+    conflicts,
+    finalizedAt: new Date().toISOString(),
+  };
+  localStorage.setItem(FINALIZED_KEY, JSON.stringify(finalized));
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Finalized — ready for the schedule output screen.";
+});
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+buildCaseCountGrid();
+refreshRosterState();
+initTapToMove();
+if (loadNightState()) {
+  document.getElementById("resultsArea").style.display = "block";
+  document.getElementById("btnRegenerate").style.display = "inline-block";
+  renderAll();
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
