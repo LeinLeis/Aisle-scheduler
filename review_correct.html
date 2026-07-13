@@ -87,6 +87,24 @@
     font-family: inherit;
   }
 
+  .crew-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .crew-count { font-size: 12px; color: var(--text-dim); }
+  .crew-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .crew-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 10px 5px 8px;
+    font-size: 12.5px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .crew-chip input[type="checkbox"] { margin: 0; }
+  .crew-chip.checked { border-color: var(--accent); background: var(--accent-dim); }
+
   .banner {
     padding: 10px 14px;
     border-radius: var(--radius);
@@ -162,6 +180,12 @@
     font-size: 12px;
     margin: 2px 4px 2px 0;
     cursor: grab;
+    /* Long-press is used to delete a worker (see initChipLongPress) — this
+       stops iOS/Android from popping up their own text-selection/callout
+       menu mid-hold, which would otherwise fight our own confirm dialog. */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
     user-select: none;
   }
   .chip:active { cursor: grabbing; }
@@ -286,6 +310,19 @@
     <a class="navlink" href="output_schedule.html">Output Schedule</a>
   </div>
 
+  <div class="panel" id="crewPanel">
+    <h3>Tonight's Crew</h3>
+    <div style="color:var(--text-dim); font-size:12px; line-height:1.5; margin-bottom:10px;">
+      The full roster can grow past who's actually in tonight — check off who's working. This is remembered as your starting point next time, so you're only toggling the few who changed.
+    </div>
+    <div class="crew-controls">
+      <button class="small" id="btnCrewSelectAll">Select All</button>
+      <button class="small" id="btnCrewSelectNone">Select None</button>
+      <span class="crew-count" id="crewCountText"></span>
+    </div>
+    <div class="crew-grid" id="crewGrid"></div>
+  </div>
+
   <div class="panel" id="setupPanel">
     <h3>Tonight's Case Counts</h3>
     <div class="setup-grid" id="caseCountGrid"></div>
@@ -320,6 +357,10 @@
           <label>Review before applying</label>
           <div id="caseReviewList"></div>
         </div>
+        <details style="margin-bottom:6px;">
+          <summary style="cursor:pointer; font-size:12px; color:var(--text-dim);">Show exactly what was detected (for troubleshooting)</summary>
+          <pre id="caseRawText" style="white-space:pre-wrap; font-size:11px; color:var(--text-dim); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px; margin-top:6px; max-height:200px; overflow:auto;"></pre>
+        </details>
       </div>
 
       <div class="modal-actions">
@@ -367,12 +408,20 @@ const AE = window.AssignmentEngine;
 const ROSTER_KEY = "aisleScheduler_workerRoster_v1";
 const NIGHT_KEY = "aisleScheduler_currentNight_v1";
 const FINALIZED_KEY = "aisleScheduler_finalizedSchedule_v1";
+// Rolling default for "who's actually working tonight" — separate from the
+// permanent roster's active/inactive status. The roster can grow to 30-40+
+// people while only ~25 work any given night, so this is its own
+// selection, not derived from the roster screen. Lives outside NIGHT_KEY
+// so it carries forward as a sensible starting point each time Review &
+// Correct is opened, rather than resetting to "everyone" every night.
+const CREW_KEY = "aisleScheduler_tonightCrew_v1";
 
 const GROCERY_ZONE_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 const settings = AE.makeSettings({ casePerMinuteRate: 1.0 });
 
 let roster = [];       // AE.makeWorker-normalized, from the roster screen's localStorage
 let rosterById = {};
+let tonightCrewIds = new Set(); // subset of active roster ids actually working tonight
 let zones = [];        // current zones (with tonight's case counts)
 let zoneById = {};
 let assignments = {};  // zoneId -> { workerIds, workloadHours, flags }  (same shape AE uses)
@@ -393,9 +442,83 @@ function loadRoster() {
   }
 }
 
+// Tonight's Crew — who's actually working, as opposed to who's on the
+// permanent roster. Loaded from CREW_KEY (a rolling default that carries
+// forward night to night) and reconciled against the current active
+// roster: ids removed from the roster or set inactive drop out silently;
+// ids that were never seen before (a brand-new hire just added on the
+// Roster screen, or the very first time this feature runs) default to
+// UNCHECKED so adding someone to the permanent roster never accidentally
+// schedules them for a night they weren't confirmed for — except on a
+// completely fresh install (no saved selection at all yet), where
+// defaulting everyone active to checked keeps Generate usable immediately
+// instead of looking broken/empty.
+function loadCrewSelection() {
+  const raw = localStorage.getItem(CREW_KEY);
+  if (!raw) return null;
+  try {
+    return new Set(JSON.parse(raw));
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveCrewSelection() {
+  localStorage.setItem(CREW_KEY, JSON.stringify([...tonightCrewIds]));
+}
+
+function syncCrewSelectionToRoster() {
+  const saved = loadCrewSelection();
+  if (saved === null) {
+    tonightCrewIds = new Set(roster.filter(w => w.active).map(w => w.id));
+  } else {
+    tonightCrewIds = new Set([...saved].filter(id => rosterById[id] && rosterById[id].active));
+  }
+  saveCrewSelection();
+}
+
+function updateCrewCountText() {
+  const activeCount = roster.filter(w => w.active).length;
+  document.getElementById("crewCountText").textContent = `${tonightCrewIds.size} of ${activeCount} active worker(s) selected for tonight.`;
+}
+
+function renderCrewGrid() {
+  const grid = document.getElementById("crewGrid");
+  grid.innerHTML = "";
+  const activeSorted = sortedByName(roster.filter(w => w.active));
+  activeSorted.forEach(w => {
+    const checked = tonightCrewIds.has(w.id);
+    const label = document.createElement("label");
+    label.className = "crew-chip" + (checked ? " checked" : "");
+    label.dataset.workerId = w.id;
+    label.innerHTML = `<input type="checkbox" ${checked ? "checked" : ""}> ${w.name}`;
+    label.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) tonightCrewIds.add(w.id);
+      else tonightCrewIds.delete(w.id);
+      label.classList.toggle("checked", e.target.checked);
+      saveCrewSelection();
+      updateCrewCountText();
+    });
+    grid.appendChild(label);
+  });
+  updateCrewCountText();
+}
+
+document.getElementById("btnCrewSelectAll").addEventListener("click", () => {
+  tonightCrewIds = new Set(roster.filter(w => w.active).map(w => w.id));
+  saveCrewSelection();
+  renderCrewGrid();
+});
+document.getElementById("btnCrewSelectNone").addEventListener("click", () => {
+  tonightCrewIds = new Set();
+  saveCrewSelection();
+  renderCrewGrid();
+});
+
 function refreshRosterState() {
   roster = loadRoster();
   rosterById = Object.fromEntries(roster.map(w => [w.id, w]));
+  syncCrewSelectionToRoster();
   const status = document.getElementById("rosterStatus");
   const noRosterBanner = document.getElementById("noRosterBanner");
   if (!roster.length) {
@@ -408,6 +531,7 @@ function refreshRosterState() {
     noRosterBanner.style.display = "none";
     document.getElementById("btnGenerate").disabled = false;
   }
+  renderCrewGrid();
 }
 
 document.getElementById("btnLoadSample").addEventListener("click", () => {
@@ -558,9 +682,49 @@ function preprocessImageForOCR(file) {
 
 // Runs OCR via a dedicated worker with an explicit page-segmentation mode
 // instead of the one-shot Tesseract.recognize() helper — see
-// worker_roster.html's runNameOCR for why. PSM 6 (single uniform text
-// block) reads a plain line-per-aisle sheet far more reliably than the
-// default full-page-layout detection.
+// worker_roster.html's runNameOCR for why PSM 6 beats the default
+// full-page-layout detection here.
+//
+// The case-count sheet is a genuine two-column table (Aisle | Cases), not a
+// simple flowing list. PSM 6 treats the whole image as "one uniform block
+// of text" and reconstructs line order from its own layout guess — on a
+// two-column table that very often comes out column-major (every aisle
+// label first, then every count, or some other scramble), which silently
+// breaks every row at once since the parser below expects "aisle number
+// then its count" on the same line.
+//
+// First attempt at fixing this clustered individual WORDS into rows by
+// vertical position from scratch — that turned out to have its own bug: a
+// running average of a growing cluster can drift, so one bad early match
+// snowballs into merging many unrelated rows into one (which matches what
+// showed up: the first row or two came out with garbage numbers, and
+// everything past that was simply gone — swallowed into one blob). Tesseract
+// already groups words into LINES correctly internally (that part of its
+// layout analysis is reliable); what goes wrong under PSM 6 is only the
+// ORDER those lines get concatenated in for a multi-column page. So instead
+// of re-deriving row grouping from raw word coordinates, this trusts
+// Tesseract's own line grouping and only re-sorts those lines top-to-bottom
+// (with each line's own words re-sorted left-to-right as a safety net).
+// Much smaller surface for a new bug to hide in.
+function reconstructRowsFromLines(lines) {
+  if (!lines || !lines.length) return "";
+  const sorted = [...lines]
+    .filter(line => line.bbox)
+    .sort((a, b) => a.bbox.y0 - b.bbox.y0);
+
+  return sorted
+    .map(line => {
+      const words = (line.words || []).filter(w => w.text && w.text.trim());
+      if (!words.length) return (line.text || "").trim();
+      return [...words]
+        .sort((a, b) => a.bbox.x0 - b.bbox.x0)
+        .map(w => w.text.trim())
+        .join(" ");
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 async function runCaseCountOCR(file, onProgress) {
   const image = await preprocessImageForOCR(file);
   const worker = await window.Tesseract.createWorker("eng", 1, {
@@ -571,7 +735,8 @@ async function runCaseCountOCR(file, onProgress) {
   try {
     await worker.setParameters({ tessedit_pageseg_mode: "6" });
     const { data } = await worker.recognize(image);
-    return data.text || "";
+    const reconstructed = reconstructRowsFromLines(data.lines);
+    return reconstructed || data.text || "";
   } finally {
     await worker.terminate();
   }
@@ -623,6 +788,7 @@ function closeCasePhotoModal() {
   document.getElementById("casePhotoFileInputCamera").value = "";
   document.getElementById("casePhotoFileInputLibrary").value = "";
   document.getElementById("caseReviewList").innerHTML = "";
+  document.getElementById("caseRawText").textContent = "";
 }
 
 function setCasePhotoStatus(text) {
@@ -654,6 +820,7 @@ async function handleCasePhotoFile(file) {
         ? `Matched ${foundCount} of 9 zones automatically — check every row below, especially any left blank.`
         : "Couldn't confidently match any aisle numbers. Enter counts manually below, or try a clearer photo."
     );
+    document.getElementById("caseRawText").textContent = text || "(nothing came back)";
     renderCaseReviewList(parsed);
     document.getElementById("caseReviewWrap").style.display = "block";
     document.getElementById("btnCasePhotoApply").style.display = "inline-block";
@@ -686,6 +853,10 @@ function applyCaseReviewToGrid() {
 // ---------------------------------------------------------------------------
 function generateSchedule() {
   if (!roster.length) return;
+  if (!tonightCrewIds.size) {
+    alert("Nobody is checked in Tonight's Crew — check off who's actually working before generating.");
+    return;
+  }
   const { counts: caseCounts, missing } = readCaseCounts();
   if (missing.length && !confirm(`No case count entered for: ${missing.join(", ")}. They'll be treated as 0 cases (essentially idle). Generate anyway?`)) {
     return;
@@ -693,9 +864,11 @@ function generateSchedule() {
   zones = AE.makeZones(caseCounts);
   zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
 
+  // Only feed the algorithm tonight's actual crew, not the whole roster —
+  // the roster can run well past who's actually working any given night.
   // Work on fresh copies so re-generating never carries over stale
   // hoursAssignedTonight/zonesAssignedTonight bookkeeping from a prior run.
-  const workingWorkers = roster.map(w => AE.makeWorker(w));
+  const workingWorkers = roster.filter(w => w.active && tonightCrewIds.has(w.id)).map(w => AE.makeWorker(w));
   const result = AE.assignNight(workingWorkers, zones, settings);
 
   assignments = {};
@@ -808,7 +981,9 @@ function sortedByName(list) {
 }
 
 function unassignedWorkers() {
-  return sortedByName(roster.filter(w => w.active && zonesContaining(w.id).length === 0));
+  // Only tonight's crew belongs in this list — someone on the roster but
+  // not checked in tonight isn't "unassigned," they're just not working.
+  return sortedByName(roster.filter(w => w.active && tonightCrewIds.has(w.id) && zonesContaining(w.id).length === 0));
 }
 
 function computeLiveConflicts() {
@@ -1189,6 +1364,13 @@ function updateSelectionUI() {
 // and double-fire — delegation sidesteps both problems.
 function initTapToMove() {
   document.addEventListener("click", e => {
+    // A long-press on this same chip just fired (see initChipLongPress) —
+    // swallow the click it also generates so it doesn't ALSO select the
+    // worker for tap-to-move right after prompting to delete them.
+    if (longPressFired) {
+      longPressFired = false;
+      return;
+    }
     const chip = e.target.closest(".chip[data-worker-id]");
     if (chip) {
       selectWorkerForMove(chip.dataset.workerId, chip.dataset.fromZone);
@@ -1206,6 +1388,85 @@ function initTapToMove() {
 }
 
 // ---------------------------------------------------------------------------
+// Long-press to delete a worker — removes them from the whole roster (not
+// just tonight), same as deleting on the Worker Roster screen, but reachable
+// without leaving this page. Deliberately a HOLD, not a tap, so it can't be
+// triggered by accident in the middle of tap-to-move — and still asks for
+// confirmation before actually touching the roster.
+// ---------------------------------------------------------------------------
+let longPressTimer = null;
+let longPressStartPos = null;
+let longPressFired = false;
+const LONG_PRESS_MS = 550;
+const LONG_PRESS_MOVE_CANCEL_PX = 10;
+
+function promptDeleteWorker(workerId) {
+  const worker = rosterById[workerId];
+  if (!worker) return;
+  if (!confirm(`Delete ${worker.name} from the roster? This removes them everywhere — not just tonight — and can't be undone.`)) return;
+
+  const raw = localStorage.getItem(ROSTER_KEY);
+  let rawList = [];
+  try { rawList = raw ? JSON.parse(raw) : []; } catch (e) { rawList = []; }
+  localStorage.setItem(ROSTER_KEY, JSON.stringify(rawList.filter(w => w.id !== workerId)));
+
+  refreshRosterState(); // reloads roster/rosterById, syncs Tonight's Crew, re-renders the crew grid
+  if (hasGenerated) {
+    reconcileAssignmentsWithRoster(); // drops the deleted worker's id out of tonight's assignments/hours too
+  }
+  renderAll();
+}
+
+function beginLongPress(e, chip) {
+  const point = e.touches ? e.touches[0] : e;
+  if (!point) return;
+  longPressFired = false;
+  longPressStartPos = { x: point.clientX, y: point.clientY };
+  clearTimeout(longPressTimer);
+  longPressTimer = setTimeout(() => {
+    longPressFired = true;
+    promptDeleteWorker(chip.dataset.workerId);
+  }, LONG_PRESS_MS);
+}
+
+function moveLongPress(e) {
+  if (!longPressStartPos) return;
+  const point = e.touches ? e.touches[0] : e;
+  if (!point) return;
+  const dx = point.clientX - longPressStartPos.x;
+  const dy = point.clientY - longPressStartPos.y;
+  if (Math.sqrt(dx * dx + dy * dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+    cancelLongPress();
+  }
+}
+
+function cancelLongPress() {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+  longPressStartPos = null;
+}
+
+function initChipLongPress() {
+  document.addEventListener("touchstart", e => {
+    const chip = e.target.closest(".chip[data-worker-id]");
+    if (chip) beginLongPress(e, chip);
+  }, { passive: true });
+  document.addEventListener("touchmove", moveLongPress, { passive: true });
+  document.addEventListener("touchend", cancelLongPress);
+  document.addEventListener("touchcancel", cancelLongPress);
+
+  // Mouse equivalent, mainly so this is testable on a laptop — cancels
+  // itself the moment a real drag starts so it never fights drag-and-drop.
+  document.addEventListener("mousedown", e => {
+    const chip = e.target.closest(".chip[data-worker-id]");
+    if (chip) beginLongPress(e, chip);
+  });
+  document.addEventListener("mousemove", moveLongPress);
+  document.addEventListener("mouseup", cancelLongPress);
+  document.addEventListener("dragstart", cancelLongPress);
+}
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 function saveNightState() {
@@ -1213,6 +1474,7 @@ function saveNightState() {
     caseCounts: readCaseCounts().counts,
     assignments,
     notes: generationNotes,
+    workingIds: [...tonightCrewIds], // freezes exactly who this generated night used
     savedAt: new Date().toISOString(),
   };
   localStorage.setItem(NIGHT_KEY, JSON.stringify(state));
@@ -1233,6 +1495,13 @@ function loadNightState() {
     assignments = state.assignments || {};
     generationNotes = state.notes || [];
     hasGenerated = Object.keys(assignments).length > 0;
+    // Restore exactly who this in-progress night was generated with, if
+    // recorded (older saved nights predate this field — leave the
+    // already-synced rolling default in place for those instead).
+    if (hasGenerated && Array.isArray(state.workingIds)) {
+      tonightCrewIds = new Set(state.workingIds.filter(id => rosterById[id] && rosterById[id].active));
+      renderCrewGrid();
+    }
     return hasGenerated;
   } catch (e) {
     return false;
@@ -1260,6 +1529,7 @@ document.getElementById("btnFinalize").addEventListener("click", () => {
     assignments,
     notes: generationNotes,
     conflicts,
+    workingIds: [...tonightCrewIds], // so Output Schedule's "unassigned" list matches tonight's actual crew, not the whole roster
     finalizedAt: new Date().toISOString(),
   };
   localStorage.setItem(FINALIZED_KEY, JSON.stringify(finalized));
@@ -1273,6 +1543,7 @@ document.getElementById("btnFinalize").addEventListener("click", () => {
 buildCaseCountGrid();
 refreshRosterState();
 initTapToMove();
+initChipLongPress();
 if (loadNightState()) {
   reconcileAssignmentsWithRoster();
   document.getElementById("resultsArea").style.display = "block";
