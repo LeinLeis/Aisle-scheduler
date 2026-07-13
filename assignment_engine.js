@@ -51,6 +51,15 @@
         needsImprovementEfficiencyFactor: 0.75,
         newHireEfficiencyFactor: 0.5,
         juiceFixedDurationHours: 3.0,
+        // Water gallons in Infants and in the juice aisle itself don't come
+        // in on the daily truck, so they never show up in a case count —
+        // but juice workers still have to stock them, and it normally adds
+        // about another hour on top of the juice aisle's own workload.
+        juiceHiddenTaskHours: 1.0,
+        // Hard ceiling on a juice worker's total night once that hidden
+        // hour is included. Juice already eats most of a shift on its own,
+        // so this leaves very little room for a second aisle — by design.
+        juiceMaxTotalHours: 5.0,
         dairyFixedDurationHours: 4.0,
         frozenFixedDurationHours: 4.0,
         lightLoadThreshold: 0.5,
@@ -142,7 +151,9 @@
     if (zone.estimationMethod === "fixed_duration") {
       if (zone.department === "dairy") return settings.dairyFixedDurationHours;
       if (zone.department === "frozen") return settings.frozenFixedDurationHours;
-      return settings.juiceFixedDurationHours;
+      // Juice's real workload is the truck/case-driven portion PLUS the
+      // water-gallon restock task that never appears in a case count.
+      return settings.juiceFixedDurationHours + settings.juiceHiddenTaskHours;
     }
     const cap = workers.length ? effectiveCapacity(workers, settings) : 1.0;
     return zoneTotalHours(zone, settings) / cap;
@@ -604,11 +615,31 @@
   // Step 3 — short-staffed handling
   // ---------------------------------------------------------------------
   function stackLeftoverZones(zones, assignments, workersById, settings) {
+    const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
     const leftover = zones.filter(z => !assignments[z.id].workerIds.length && z.department !== "dairy" && z.department !== "frozen");
     const donorZoneIds = new Set(zones.filter(z => z.department !== "dairy" && z.department !== "frozen").map(z => z.id));
 
     for (const zone of leftover) {
       let candidates = Object.entries(assignments).filter(([zid, a]) => a.workerIds.length && zid !== zone.id && donorZoneIds.has(zid));
+
+      // Juice always carries roughly an extra hour of restocking that never
+      // shows up in a case count (water gallons in Infants and in the
+      // juice aisle itself, off the daily truck) — so a juice worker's real
+      // total is already close to the ceiling before they touch anything
+      // else. Whichever side of this pairing juice is on — a juice worker
+      // being lent out to cover a leftover zone, or juice itself being the
+      // leftover zone getting staffed by someone else's group — only allow
+      // it if the combined total stays under the hard cap. Otherwise this
+      // isn't "very light," so skip the candidate and let a real one win.
+      if (zone.department === "juice" || candidates.some(([zid]) => zoneById[zid].department === "juice")) {
+        candidates = candidates.filter(([zid, a]) => {
+          const donorZone = zoneById[zid];
+          if (zone.department !== "juice" && donorZone.department !== "juice") return true;
+          const group = a.workerIds.map(wid => workersById[wid]);
+          const newHours = workloadHoursFor(zone, group, settings);
+          return group.every(w => w.hoursAssignedTonight + newHours <= settings.juiceMaxTotalHours);
+        });
+      }
       if (!candidates.length) continue;
 
       function groupLoad(a) {
