@@ -25,6 +25,11 @@
     --green: #3fb950;
     --amber: #d9a441;
     --red: #e5534b;
+    /* Rating colors specifically — deliberately separate from --green/
+       --amber above, which are still used for unrelated "good/warning"
+       indicators elsewhere and shouldn't shift when the rating palette does. */
+    --rating-on-pace: #39ff14;
+    --rating-needs-improvement: #228b22;
     --radius: 8px;
   }
   * { box-sizing: border-box; }
@@ -229,8 +234,8 @@
   .zone-card.tap-target:active { background: #182036; }
   #unassignedTray.tap-target { border-color: var(--accent); border-style: solid; cursor: pointer; }
   .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .dot-on_pace { background: var(--green); }
-  .dot-needs_improvement { background: var(--amber); }
+  .dot-on_pace { background: var(--rating-on-pace); }
+  .dot-needs_improvement { background: var(--rating-needs-improvement); }
   .dot-new { background: var(--accent); }
   .chip .hrs { color: var(--text-dim); font-size: 10.5px; }
   .flags { margin-top: 6px; }

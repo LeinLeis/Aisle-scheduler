@@ -26,6 +26,11 @@
     --red: #e5534b;
     --lock: #b366f0;
     --lock-dim: #3a2a55;
+    /* Rating colors specifically — deliberately separate from --green/
+       --amber above, which are still used for unrelated "good/warning"
+       indicators elsewhere and shouldn't shift when the rating palette does. */
+    --rating-on-pace: #39ff14;
+    --rating-needs-improvement: #228b22;
     --radius: 8px;
   }
   * { box-sizing: border-box; }
@@ -101,8 +106,8 @@
     font-weight: 600;
     margin: 1px 3px 1px 0;
   }
-  .pill-on_pace { background: #16321e; color: var(--green); }
-  .pill-needs_improvement { background: #332714; color: var(--amber); }
+  .pill-on_pace { background: #123018; color: var(--rating-on-pace); }
+  .pill-needs_improvement { background: #16281a; color: var(--rating-needs-improvement); }
   .pill-new { background: #17293a; color: var(--accent); }
   .tag {
     display: inline-block;

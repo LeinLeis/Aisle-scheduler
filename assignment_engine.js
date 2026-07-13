@@ -760,13 +760,22 @@
     return [needsExtraHelp(zid, assignments) ? 0 : 1, -assignments[zid].workloadHours];
   }
 
+  // A zone only gets a light zone's whole crew merged in when IT is
+  // genuinely too heavy to finish (actual hours over target) — not just
+  // because the people in it happen to be rated below On Pace. A pair of
+  // Needs Improvement workers with a light, on-target case count should be
+  // left alone to finish at their own pace; once they're done, the intent
+  // is for them to move on to other parts of the store, not get folded
+  // into another grocery zone as a "just in case" reinforcement.
+  // needsExtraHelp still breaks ties below when multiple zones legitimately
+  // qualify by hours — it's just no longer enough to qualify on its own.
   function rebalanceLightZones(zones, assignments, workersById, settings) {
     const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
     const groceryIds = zones.filter(z => z.estimationMethod !== "fixed_duration").map(z => z.id);
 
     for (let i = 0; i < groceryIds.length; i++) {
       const heavyCandidates = groceryIds.filter(
-        zid => assignments[zid].workerIds.length < settings.maxGroupSize && (assignments[zid].workloadHours > settings.groceryTargetHours || needsExtraHelp(zid, assignments))
+        zid => assignments[zid].workerIds.length < settings.maxGroupSize && assignments[zid].workloadHours > settings.groceryTargetHours
       );
       if (!heavyCandidates.length) break;
       let heavyZid = heavyCandidates[0];
