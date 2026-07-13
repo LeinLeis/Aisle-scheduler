@@ -259,7 +259,7 @@
   // Step 2 — fully-staffed fill (also the base routine short-staffed
   // nights use; it just runs out of workers sooner)
   // ---------------------------------------------------------------------
-  function fillZones(zones, pool, settings, assignments) {
+  function fillZones(zones, pool, settings, assignments, rotationKey) {
     const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
     const targets = {};
     zones.forEach(z => { targets[z.id] = targetGroupSize(z, settings); });
@@ -406,7 +406,7 @@
       }
     }
 
-    const competing = zones.filter(z => z.department !== "dairy" && z.department !== "frozen");
+    const competingUnrotated = zones.filter(z => z.department !== "dairy" && z.department !== "frozen");
 
     // ---------------------------------------------------------------------
     // Baseline pass — every competing zone (grocery + Juice) gets its first
@@ -417,7 +417,22 @@
     // on a heavy night) end up with nobody at all. Round-robin means a
     // pool shortfall lands as "a few zones one short of their pair"
     // instead of "whoever's last in line gets zero."
+    //
+    // The sweep order itself used to be fixed every single pass (always
+    // A, B, C, ... I) — which just relocates the same problem one level
+    // up: whichever zone is LAST in that fixed order is systematically the
+    // one still waiting when the pool runs dry mid-sweep by a small
+    // margin, night after night, since ZONE_DEFS always lists Juice last.
+    // Rotating the sweep's starting point by a daily key means a pool
+    // that's short by one or two lands on a different zone each night
+    // instead of reliably picking on the same one.
     // ---------------------------------------------------------------------
+    if (rotationKey === undefined || rotationKey === null) rotationKey = todayRotationKey();
+    const rotateStart = competingUnrotated.length
+      ? ((rotationKey % competingUnrotated.length) + competingUnrotated.length) % competingUnrotated.length
+      : 0;
+    const competing = competingUnrotated.slice(rotateStart).concat(competingUnrotated.slice(0, rotateStart));
+
     const BASELINE_HEADCOUNT = 2;
     let stillNeedsBaseline = true;
     while (stillNeedsBaseline) {
@@ -870,6 +885,94 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Step 3.5 — a "new" rated worker left completely alone in a zone gets
+  // one more, dedicated attempt at a partner, regardless of what the hour
+  // math says. Everything above this point (baseline fill, rebalancing,
+  // idle reinforcement) is tuned around hitting each zone's target hours —
+  // a zone that's genuinely light on cases can legitimately end up with
+  // one person by that logic alone, and a lone "new" hire on what should
+  // have been a two-person zone is a real safety/support problem
+  // independent of whether the hours pencil out. This runs last and can
+  // override the normal placement rules for exactly that reason.
+  // ---------------------------------------------------------------------
+  function protectSoloNewHires(zones, assignments, idlePool, workersById, settings) {
+    const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
+
+    for (const zone of zones) {
+      const assignment = assignments[zone.id];
+      if (!assignment || assignment.workerIds.length !== 1) continue;
+      const solo = workersById[assignment.workerIds[0]];
+      if (!solo || solo.productionRating !== "new") continue;
+
+      // First choice: someone who isn't working anywhere yet tonight —
+      // costs nothing else, unstaffs nothing.
+      let partner = idlePool.find(w => !isIncompatible(w, solo)) || null;
+      let donorZid = null;
+
+      if (!partner) {
+        // Nobody idle — borrow from whichever other zone can most safely
+        // spare a hand: at least 3 people there already (so it drops to 2,
+        // never down to a solo situation of its own), not Dairy/Frozen
+        // (guaranteed headcount, not a general pool to raid), not already
+        // flagged struggling or understaffed, and the lightest-loaded
+        // candidate first — pulling someone off a zone with real slack
+        // left is a lot safer than pulling off one that's already tight.
+        const donorCandidates = [];
+        for (const dz of zones) {
+          if (dz.id === zone.id || dz.department === "dairy" || dz.department === "frozen") continue;
+          const da = assignments[dz.id];
+          if (!da || da.workerIds.length < 3) continue;
+          if (da.flags.includes(STRUGGLE_FLAG) || da.flags.includes("understaffed_below_pair")) continue;
+          const group = da.workerIds.map(id => workersById[id]);
+          for (const cand of group) {
+            if (isIncompatible(cand, solo)) continue;
+            const remaining = group.filter(m => m.id !== cand.id);
+            if (remaining.some(m => isLockedPair(cand, m))) continue;
+            donorCandidates.push({ zid: dz.id, worker: cand, load: da.workloadHours });
+          }
+        }
+        donorCandidates.sort((a, b) => a.load - b.load);
+        if (donorCandidates.length) {
+          partner = donorCandidates[0].worker;
+          donorZid = donorCandidates[0].zid;
+        }
+      }
+
+      if (!partner) {
+        // Truly nobody available anywhere — leave the flag fillZones
+        // already set, but call this out distinctly so it isn't lost in
+        // the general "below a pair" noise: a new hire alone is a
+        // different kind of problem than a case count running light.
+        addFlag(assignment, "new_hire_left_solo");
+        continue;
+      }
+
+      if (donorZid) {
+        const donorAssignment = assignments[donorZid];
+        const idx = donorAssignment.workerIds.indexOf(partner.id);
+        if (idx >= 0) donorAssignment.workerIds.splice(idx, 1);
+        const donorZone = zoneById[donorZid];
+        const donorGroup = donorAssignment.workerIds.map(id => workersById[id]);
+        donorAssignment.workloadHours = workloadHoursFor(donorZone, donorGroup, settings);
+        addFlag(donorAssignment, "lent_new_hire_safety_partner");
+        partner.zonesAssignedTonight = partner.zonesAssignedTonight.filter(z => z !== donorZid);
+      } else {
+        const poolIdx = idlePool.indexOf(partner);
+        if (poolIdx >= 0) idlePool.splice(poolIdx, 1);
+      }
+
+      assignment.workerIds.push(partner.id);
+      const group = assignment.workerIds.map(id => workersById[id]);
+      assignment.workloadHours = workloadHoursFor(zone, group, settings);
+      addFlag(assignment, "new_hire_safety_partner");
+      const flagIdx = assignment.flags.indexOf("understaffed_below_pair");
+      if (flagIdx >= 0) assignment.flags.splice(flagIdx, 1);
+      partner.zonesAssignedTonight.push(zone.id);
+      partner.hoursAssignedTonight += assignment.workloadHours;
+    }
+  }
+
   function computeShortfall(assignments, workersById, settings) {
     const overByWorker = {};
     const affectedZones = [];
@@ -939,8 +1042,10 @@
       let group = dedicated.concat(chosenRotation);
 
       let backfilled = false;
+      let lockBroken = false;
       if (group.length < target) {
         const alreadyIn = new Set(group.map(w => w.id));
+        const idToWorker = Object.fromEntries(pool.map(w => [w.id, w]));
         // Anyone who explicitly prefers this zone gets first claim on the
         // backfill seats. Otherwise, someone with NO stated zone
         // preference at all is preferred over someone who asked for a
@@ -950,13 +1055,63 @@
         // generic backfill purely on an alphabetical id tiebreak, and
         // never get the zone they actually asked for. Rating breaks ties
         // after that.
-        const backfillPool = pool
-          .filter(w => !alreadyIn.has(w.id) && !w.fixedDepartment && !w.departmentRotationPool)
+        //
+        // Locked With is a hard requirement, not just a scheduling nicety,
+        // so it gets weighed before rating too: anyone whose Locked With
+        // partner is ALSO still sitting in the general pool would have
+        // their pair split by picking them alone — that's an avoidable
+        // break, since the pair could stay together instead. Those
+        // candidates sort behind everyone else so the backfill reaches for
+        // an unattached worker first. Compatibility (incompatibleWith) is
+        // filtered out entirely, same hard rule fillZones uses everywhere.
+        const rawBackfillPool = pool.filter(w => !alreadyIn.has(w.id) && !w.fixedDepartment && !w.departmentRotationPool);
+        const availableIds = new Set(rawBackfillPool.map(w => w.id));
+        function wouldSplitLock(w) {
+          return w.lockedWith.some(id => availableIds.has(id));
+        }
+        const backfillPool = rawBackfillPool
+          .filter(w => !group.some(m => isIncompatible(w, m)))
           .sort((a, b) => compareArrays(
-            [zonePrefRank(a, zone.id), a.preferredZones.length ? 1 : 0, ratingOrder[a.productionRating], a.id],
-            [zonePrefRank(b, zone.id), b.preferredZones.length ? 1 : 0, ratingOrder[b.productionRating], b.id]
+            [zonePrefRank(a, zone.id), a.preferredZones.length ? 1 : 0, wouldSplitLock(a) ? 1 : 0, ratingOrder[a.productionRating], a.id],
+            [zonePrefRank(b, zone.id), b.preferredZones.length ? 1 : 0, wouldSplitLock(b) ? 1 : 0, ratingOrder[b.productionRating], b.id]
           ));
-        const picked = backfillPool.slice(0, target - group.length);
+
+        const picked = [];
+        const pickedIds = new Set();
+        let slotsLeft = target - group.length;
+        for (const candidate of backfillPool) {
+          if (slotsLeft <= 0) break;
+          if (pickedIds.has(candidate.id)) continue;
+          if (!wouldSplitLock(candidate)) {
+            picked.push(candidate);
+            pickedIds.add(candidate.id);
+            slotsLeft -= 1;
+            continue;
+          }
+          // Every remaining candidate here would split a lock. Try to
+          // bring the whole pair in together instead of breaking it up —
+          // dairy/frozen need bodies anyway, so two locked partners
+          // filling two seats is strictly better than one seat plus a
+          // broken lock.
+          const partnerId = candidate.lockedWith.find(id => availableIds.has(id) && !pickedIds.has(id));
+          const partner = partnerId ? idToWorker[partnerId] : null;
+          const partnerOk = partner && !isIncompatible(candidate, partner) && !group.some(m => isIncompatible(partner, m));
+          if (partnerOk && slotsLeft >= 2) {
+            picked.push(candidate, partner);
+            pickedIds.add(candidate.id);
+            pickedIds.add(partner.id);
+            slotsLeft -= 2;
+          } else {
+            // Last resort: no room (or no compatible way) to keep the
+            // pair together, so the lock has to give. computeLiveConflicts
+            // on the Assignment screen flags this so it's never silent.
+            picked.push(candidate);
+            pickedIds.add(candidate.id);
+            slotsLeft -= 1;
+            lockBroken = true;
+          }
+        }
+
         if (picked.length) {
           backfilled = true;
           group = group.concat(picked);
@@ -969,6 +1124,7 @@
       assignment.workerIds = group.map(w => w.id);
       addFlag(assignment, "fixed_department");
       if (backfilled) addFlag(assignment, "fixed_department_backfill");
+      if (lockBroken) addFlag(assignment, "fixed_department_split_lock");
       if (group.length < target) addFlag(assignment, "fixed_department_understaffed");
       assignment.workloadHours = workloadHoursFor(zone, group, settings);
 
@@ -998,7 +1154,7 @@
 
     let pool = [...active];
     assignFixedDepartments(zones, assignments, pool, settings, rotationKey); // Step 0.5
-    fillZones(zones, pool, settings, assignments); // Step 1 + Step 2 (+2.4)
+    fillZones(zones, pool, settings, assignments, rotationKey); // Step 1 + Step 2 (+2.4)
     anchorStrugglingZones(zones, assignments, workersById, settings); // Step 2.65
     rebalanceOverstaffedZones(zones, assignments, workersById, settings); // Step 2.7
     stackLeftoverZones(zones, assignments, workersById, settings); // Step 3.1-3.2
@@ -1006,6 +1162,7 @@
     const stillIdle = active.filter(w => !w.zonesAssignedTonight.length);
     reinforceWithIdleWorkers(zones, assignments, stillIdle, workersById, settings); // Step 3.3
     rebalanceLightZones(zones, assignments, workersById, settings); // Step 2.6
+    protectSoloNewHires(zones, assignments, stillIdle, workersById, settings); // Step 3.5
 
     const [shortfallHours, , overByWorker] = computeShortfall(assignments, workersById, settings); // Step 3.4
     const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
@@ -1025,6 +1182,11 @@
         const names = a.workerIds.map(wid => workersById[wid].name).join(", ");
         notes.push(`${zoneLabel(zone)} needed help from the general pool tonight to hit its usual headcount: ${names}.`);
       }
+      if (a.flags.includes("fixed_department_split_lock")) {
+        notes.push(
+          `${zoneLabel(zone)}'s backfill had to split a Locked With pair to fill its headcount tonight — every other way to cover it was tried first. Check the Assignment screen's conflict notice for who.`
+        );
+      }
     }
 
     // Grocery/Juice zones don't get the same dedicated note above (their
@@ -1040,6 +1202,20 @@
       if (!a.workerIds.length) {
         notes.push(`${zoneLabel(zone)} has nobody assigned tonight — not enough crew to cover it without pushing someone over the hour cap.`);
       }
+    }
+
+    // A solo new hire is called out on its own, separate from the routine
+    // understaffed note above — this is the one case protectSoloNewHires
+    // tried and genuinely couldn't fix (nobody anywhere could be spared
+    // without creating a second solo situation), so it needs a human to
+    // look at it, not just a flag buried in the zone card.
+    for (const [zid, a] of Object.entries(assignments)) {
+      if (!a.flags.includes("new_hire_left_solo")) continue;
+      const zone = zoneById[zid];
+      const soloWorker = a.workerIds.length === 1 ? workersById[a.workerIds[0]] : null;
+      notes.push(
+        `${soloWorker ? soloWorker.name : "A new hire"} is working ${zoneLabel(zone)} alone tonight — nobody else was available to partner them without leaving another zone equally short-handed. Worth a supervisor check-in.`
+      );
     }
 
     if (shortfallHours > 0.001) {
@@ -1136,6 +1312,7 @@
     stackLeftoverZones,
     reinforceWithIdleWorkers,
     rebalanceLightZones,
+    protectSoloNewHires,
     computeShortfall,
   };
 });

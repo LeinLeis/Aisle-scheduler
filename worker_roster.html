@@ -91,32 +91,53 @@
     border-radius: var(--radius);
     overflow-x: auto;
   }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1100px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--panel-2); position: sticky; top: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 760px; table-layout: fixed; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: break-word; }
+  th { color: var(--text-dim); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--panel-2); position: sticky; top: 0; }
+  th:nth-child(1), td:nth-child(1) { width: 17%; }
+  th:nth-child(2), td:nth-child(2) { width: 11%; }
+  th:nth-child(3), td:nth-child(3) { width: 15%; }
+  th:nth-child(4), td:nth-child(4) { width: 15%; }
+  th:nth-child(5), td:nth-child(5) { width: 15%; }
+  th:nth-child(6), td:nth-child(6) { width: 15%; }
+  th:nth-child(7), td:nth-child(7) { width: 12%; }
   tr:last-child td { border-bottom: none; }
   tr.inactive { opacity: 0.45; }
   .name-cell { font-weight: 600; }
-  .id-tag { color: var(--text-dim); font-size: 11px; font-weight: 400; display: block; }
+  .id-tag { color: var(--text-dim); font-size: 10px; font-weight: 400; display: block; }
+  .perf-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .perf-badge.perf-fast { border-color: var(--rating-on-pace); color: var(--rating-on-pace); }
+  .perf-badge.perf-slow { border-color: var(--red); color: var(--red); }
+  .perf-badge.perf-pending { opacity: 0.5; }
   .pill {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 1px 6px;
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
-    margin: 1px 3px 1px 0;
+    margin: 1px 2px 1px 0;
   }
   .pill-on_pace { background: #123018; color: var(--rating-on-pace); }
   .pill-needs_improvement { background: #16281a; color: var(--rating-needs-improvement); }
   .pill-new { background: #17293a; color: var(--accent); }
   .tag {
     display: inline-block;
-    padding: 2px 7px;
+    padding: 1px 5px;
     border-radius: 5px;
     background: var(--panel-2);
     border: 1px solid var(--border);
-    font-size: 11px;
-    margin: 1px 3px 1px 0;
+    font-size: 10px;
+    margin: 1px 2px 1px 0;
     color: var(--text-dim);
   }
   .tag.lock { border-color: var(--lock); color: var(--lock); }
@@ -187,6 +208,7 @@
   .note-inputs .note-row span { width: 90px; flex-shrink: 0; color: var(--text-dim); }
   .modal-actions { display: flex; justify-content: space-between; margin-top: 22px; }
   .modal-actions .right { display: flex; gap: 8px; }
+  .modal-actions-top { display: flex; justify-content: flex-end; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
   .conflict-note { font-size: 11px; color: var(--amber); margin-top: 6px; }
   .name-check-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
   .name-check-row input[type="checkbox"] { width: auto; flex-shrink: 0; }
@@ -239,6 +261,10 @@
     <div class="modal">
       <h2 id="modalTitle">Add Worker</h2>
       <div class="modal-sub" id="modalSub">Fields map directly to the Worker model used by the scheduling algorithm.</div>
+
+      <div class="modal-actions-top">
+        <button class="primary" id="btnSaveTop">Save Worker</button>
+      </div>
 
       <div class="field">
         <label>Name</label>
@@ -397,6 +423,39 @@ const ZONES = [
 const ZONE_LABEL = Object.fromEntries(ZONES.map(z => [z.id, z.label]));
 
 const STORAGE_KEY = "aisleScheduler_workerRoster_v1";
+// Written by output_schedule.html every time actual hours get logged
+// against a case-rate zone (Done button, or the manual actual-hours field)
+// — see the "Performance history" section there for the full math. This
+// screen only reads and displays it.
+const PERF_KEY = "aisleScheduler_workerPerformanceHistory_v1";
+
+function loadPerformanceHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(PERF_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+// Turns a worker's accumulated samples into one live percentage: their
+// total measured case-handling minutes across every logged night, against
+// what the 1-case-per-minute baseline would have taken for the same work.
+// Weighted by how much work each sample represents (a big heavy zone counts
+// more than a light one) rather than a plain average of per-night
+// percentages, so one short, easy night doesn't swing the number as hard as
+// a full one. Returns null with too little data to mean anything yet.
+const MIN_SAMPLES_FOR_TREND = 3;
+function performancePercentFor(workerId) {
+  const history = loadPerformanceHistory();
+  const entry = history[workerId];
+  if (!entry || !entry.samples) return null;
+  const samples = Object.values(entry.samples);
+  if (samples.length < MIN_SAMPLES_FOR_TREND) return null;
+  const totalBaseline = samples.reduce((s, x) => s + x.baselinePersonMinutes, 0);
+  const totalActual = samples.reduce((s, x) => s + x.actualPersonMinutes, 0);
+  if (totalActual <= 0) return null;
+  return { pct: (totalBaseline / totalActual) * 100, sampleCount: samples.length };
+}
 
 // Mirrors wid() in demo.py — used only to seed a friendly, stable id when a
 // worker is first created. Editing the name afterward does NOT change the
@@ -558,11 +617,19 @@ function renderTable() {
     if (worker.fixedDepartment) deptHtml = `<span class="tag dept">${worker.fixedDepartment === "dairy" ? "Dairy" : "Frozen"} (every night)</span>`;
     else if (worker.departmentRotationPool) deptHtml = `<span class="tag dept">${worker.departmentRotationPool === "dairy" ? "Dairy" : "Frozen"} (rotation)</span>`;
 
+    const perf = performancePercentFor(worker.id);
+    const perfBadge = perf
+      ? `<span class="perf-badge${perf.pct >= 105 ? " perf-fast" : perf.pct <= 90 ? " perf-slow" : ""}" title="${perf.sampleCount} logged zone-night(s), weighted by workload. Measures case-handling speed vs the 1 case/min baseline — everyone sharing a zone that night gets the same sample, so a strong or weak partner can pull this up or down too.">${Math.round(perf.pct)}%</span>`
+      : `<span class="perf-badge perf-pending" title="Needs at least ${MIN_SAMPLES_FOR_TREND} logged zone-nights (case-rate zones only) before a trend means anything.">—%</span>`;
+
     tr.innerHTML = `
       <td class="name-cell">
-        <div style="display:flex; align-items:center; gap:8px;">
+        <div style="display:flex; align-items:center; gap:6px;">
           <button data-edit="${worker.id}" style="flex-shrink:0; padding:4px 9px; font-size:12px;">Edit</button>
-          <div>${worker.name}${worker.active ? "" : ' <span class="muted">(inactive)</span>'}<span class="id-tag">${worker.id}</span></div>
+          <div>
+            <div style="display:flex; align-items:center; gap:6px;">${worker.name}${worker.active ? "" : ' <span class="muted">(inactive)</span>'}${perfBadge}</div>
+            <span class="id-tag">${worker.id}</span>
+          </div>
         </div>
       </td>
       <td><span class="pill pill-${worker.productionRating}">${ratingLabel(worker.productionRating)}</span>${worker.unsuitableForNewHires ? '<div class="hint" style="margin-top:4px;">Unsuitable for new hires</div>' : ""}</td>
@@ -1106,6 +1173,7 @@ function addCheckedNamesAsWorkers() {
 document.getElementById("btnAdd").addEventListener("click", () => openModal(null));
 document.getElementById("btnCancel").addEventListener("click", closeModal);
 document.getElementById("btnSave").addEventListener("click", saveWorker);
+document.getElementById("btnSaveTop").addEventListener("click", saveWorker);
 document.getElementById("btnDelete").addEventListener("click", deleteWorker);
 document.getElementById("overlay").addEventListener("click", (e) => { if (e.target.id === "overlay") closeModal(); });
 
@@ -1205,7 +1273,12 @@ if ("serviceWorker" in navigator) {
     location.href = PAGES[newIdx].file;
   }
 
-  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .worker-tag, .bubble-menu, .overlay, .modal";
+  // .table-wrap is included because the roster table scrolls horizontally
+  // on its own (overflow-x: auto) when it's wider than the screen — without
+  // this, a sideways drag meant to scroll the table gets read as a page
+  // swipe instead, since a table scroll and a page swipe are both
+  // horizontal gestures.
+  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .worker-tag, .bubble-menu, .overlay, .modal, .table-wrap";
   const SWIPE_THRESHOLD = 70;
   let startX = null, startY = null, startedOnInteractive = false;
 

@@ -65,6 +65,19 @@
   button.primary:hover { background: #3f7de0; }
   button.small { padding: 4px 9px; font-size: 12px; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.danger { color: var(--red); }
+  button.danger:hover { background: #3a2323; border-color: var(--red); }
+
+  .top-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .top-actions .status-msg { margin-right: auto; }
 
   .panel {
     background: var(--panel);
@@ -374,6 +387,12 @@
     <a class="navlink" href="worker_roster.html">Worker Roster</a>
     <a class="navlink active" href="review_correct.html">Assignment</a>
     <a class="navlink" href="output_schedule.html">Output Schedule</a>
+  </div>
+
+  <div class="top-actions" id="topActions" style="display:none;">
+    <span class="status-msg" id="statusMsgTop"></span>
+    <button class="danger" id="btnResetAllTop">Reset All</button>
+    <button class="primary" id="btnFinalizeTop">Save &amp; Finalize</button>
   </div>
 
   <div class="panel" id="crewPanel">
@@ -1195,8 +1214,30 @@ function applyCaseReviewToGrid() {
     }
   });
   closeCasePhotoModal();
+
+  // A fresh scan means tonight's real numbers just changed underneath
+  // whatever plan (if any) was already on screen. Rather than leave last
+  // night's — or five minutes ago's — aisle assignments sitting there
+  // looking current, wipe the board back to blank so nothing gets acted on
+  // until Generate is run again against the new counts. Case counts and
+  // Tonight's Crew are untouched; this only clears the assignment result.
+  let clearedPlan = false;
+  if (appliedCount && hasGenerated) {
+    assignments = {};
+    generationNotes = [];
+    hasGenerated = false;
+    document.getElementById("resultsArea").style.display = "none";
+    document.getElementById("btnRegenerate").style.display = "none";
+    document.getElementById("topActions").style.display = "none";
+    saveNightState();
+    clearedPlan = true;
+  }
+
   if (appliedCount) {
-    alert(`Applied ${appliedCount} case count(s). Anything left blank in the review table was left untouched here too.`);
+    const planNote = clearedPlan
+      ? " The existing plan was cleared since the numbers changed — hit Generate to build a new one."
+      : "";
+    alert(`Applied ${appliedCount} case count(s). Anything left blank in the review table was left untouched here too.${planNote}`);
   }
 }
 
@@ -1251,6 +1292,7 @@ function generateSchedule() {
 
   document.getElementById("resultsArea").style.display = "block";
   document.getElementById("btnRegenerate").style.display = "inline-block";
+  document.getElementById("topActions").style.display = "flex";
   saveNightState();
   renderAll();
 }
@@ -1428,13 +1470,17 @@ function flagLabel(flag) {
     lent_to_heavier_zone: "balanced (lent out)",
     over_cap: "over cap",
     redistributed: "redistributed",
+    fixed_department_split_lock: "split a locked pair to fill this",
+    new_hire_left_solo: "new hire left solo",
+    new_hire_safety_partner: "given a safety partner",
+    lent_new_hire_safety_partner: "lent a safety partner",
   };
   return labels[flag] || flag.replace(/_/g, " ");
 }
 
 function flagClass(flag) {
-  if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers"].includes(flag)) return "bad";
-  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand"].includes(flag)) return "good";
+  if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers", "fixed_department_split_lock", "new_hire_left_solo"].includes(flag)) return "bad";
+  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand", "new_hire_safety_partner"].includes(flag)) return "good";
   return "neutral";
 }
 
@@ -1947,7 +1993,9 @@ document.getElementById("btnExport").addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
-document.getElementById("btnFinalize").addEventListener("click", () => {
+// Shared by both the top and bottom Finalize buttons — same action either
+// way, just reachable without scrolling past the whole board first.
+function finalizeSchedule() {
   const conflicts = computeLiveConflicts();
   if (conflicts.length && !confirm(`There are ${conflicts.length} unresolved conflict(s) from manual overrides. Finalize anyway?`)) {
     return;
@@ -1961,9 +2009,44 @@ document.getElementById("btnFinalize").addEventListener("click", () => {
     finalizedAt: new Date().toISOString(),
   };
   localStorage.setItem(FINALIZED_KEY, JSON.stringify(finalized));
-  const status = document.getElementById("statusMsg");
-  status.textContent = "Finalized — ready for the schedule output screen.";
-});
+  const message = "Finalized — ready for the schedule output screen.";
+  document.getElementById("statusMsg").textContent = message;
+  const statusTop = document.getElementById("statusMsgTop");
+  statusTop.textContent = message;
+  setTimeout(() => { if (statusTop.textContent === message) statusTop.textContent = ""; }, 2500);
+}
+
+// Wipes every zone's assignment back to empty and everyone back to
+// Unassigned Tonight — a blank board to build from by hand, without
+// discarding tonight's case counts or crew selection (that's what
+// Regenerate is for, and it reruns the algorithm instead of just clearing).
+function resetAllAssignments() {
+  if (!confirm("Reset all assignments? Everyone moves back to Unassigned Tonight — case counts and crew selection stay as they are. This can't be undone.")) {
+    return;
+  }
+  Object.keys(assignments).forEach(zid => {
+    const zone = zoneById[zid];
+    assignments[zid] = {
+      workerIds: [],
+      flatHours: flatHoursFor(zone, 0),
+      workloadHours: zone ? AE.workloadHoursFor(zone, [], settings) : 0,
+      actualHours: null,
+      flags: [],
+    };
+  });
+  generationNotes = [];
+  saveNightState();
+  renderAll();
+  const message = "All assignments cleared.";
+  document.getElementById("statusMsg").textContent = message;
+  const statusTop = document.getElementById("statusMsgTop");
+  statusTop.textContent = message;
+  setTimeout(() => { if (statusTop.textContent === message) statusTop.textContent = ""; }, 2500);
+}
+
+document.getElementById("btnFinalize").addEventListener("click", finalizeSchedule);
+document.getElementById("btnFinalizeTop").addEventListener("click", finalizeSchedule);
+document.getElementById("btnResetAllTop").addEventListener("click", resetAllAssignments);
 
 // ---------------------------------------------------------------------------
 // Init
@@ -1977,6 +2060,7 @@ if (loadNightState()) {
   reconcileAssignmentsWithRoster();
   document.getElementById("resultsArea").style.display = "block";
   document.getElementById("btnRegenerate").style.display = "inline-block";
+  document.getElementById("topActions").style.display = "flex";
   renderAll();
 }
 

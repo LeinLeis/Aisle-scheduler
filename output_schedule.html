@@ -114,6 +114,9 @@
   }
   .zone-row.dept { border-color: #2b4030; }
   .zone-row.understaffed { border-color: var(--red); }
+  .zone-row.tap-target { border-color: var(--accent); cursor: pointer; }
+  .zone-row.tap-target:active { background: #182036; }
+  #unassignedPanel.tap-target { border-color: var(--accent); cursor: pointer; }
   .zone-row-head {
     display: flex;
     flex-wrap: wrap;
@@ -140,6 +143,7 @@
     -webkit-user-select: none;
     user-select: none;
   }
+  .worker-tag.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79,140,255,0.4); background: var(--accent-dim); }
   .worker-tag .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
   .dot-on_pace { background: var(--rating-on-pace); }
   .dot-needs_improvement { background: var(--rating-needs-improvement); }
@@ -287,7 +291,7 @@
 
   <h1>Tonight's Schedule</h1>
   <div class="subtitle">
-    Read-only printout of the finalized plan. To move people between zones, go back to Assignment — this screen is for reading the plan and logging actual hours as the shift runs.
+    The live plan for tonight — tap a worker, then tap a zone (or "Not Assigned Tonight") to move them, same as on Assignment. Also for logging actual hours as the shift runs.
   </div>
 
   <div class="nav-row">
@@ -303,6 +307,7 @@
   <div id="scheduleArea" style="display:none;">
     <div id="conflictBanner" class="banner warn" style="display:none;"></div>
     <div id="timeSummaryBanner" class="banner info" style="display:none;"></div>
+    <div id="tapMoveHint" class="banner info" style="display:none;"></div>
 
     <div class="meta-bar">
       <span class="meta-text" id="metaText"></span>
@@ -319,7 +324,7 @@
 
     <div class="zone-list" id="zoneList"></div>
 
-    <div class="panel" id="unassignedPanel" style="display:none;">
+    <div class="panel" id="unassignedPanel">
       <h3>Not Assigned Tonight</h3>
       <div id="unassignedList" class="worker-names"></div>
     </div>
@@ -330,6 +335,7 @@ const AE = window.AssignmentEngine;
 const ROSTER_KEY = "aisleScheduler_workerRoster_v1";
 const NIGHT_KEY = "aisleScheduler_currentNight_v1";
 const FINALIZED_KEY = "aisleScheduler_finalizedSchedule_v1";
+const PERF_KEY = "aisleScheduler_workerPerformanceHistory_v1";
 
 const settings = AE.makeSettings({ casePerMinuteRate: 1.0 });
 
@@ -462,13 +468,17 @@ function flagLabel(flag) {
     lent_to_heavier_zone: "balanced (lent out)",
     over_cap: "over cap",
     redistributed: "redistributed",
+    fixed_department_split_lock: "split a locked pair to fill this",
+    new_hire_left_solo: "new hire left solo",
+    new_hire_safety_partner: "given a safety partner",
+    lent_new_hire_safety_partner: "lent a safety partner",
   };
   return labels[flag] || flag.replace(/_/g, " ");
 }
 
 function flagClass(flag) {
-  if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers"].includes(flag)) return "bad";
-  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand"].includes(flag)) return "good";
+  if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers", "fixed_department_split_lock", "new_hire_left_solo"].includes(flag)) return "bad";
+  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand", "new_hire_safety_partner"].includes(flag)) return "good";
   return "neutral";
 }
 
@@ -520,6 +530,7 @@ function renderZoneList() {
 
     const row = document.createElement("div");
     row.className = "zone-row" + (isDept ? " dept" : "") + (understaffed ? " understaffed" : "");
+    row.dataset.zoneId = zone.id;
 
     const sortedWorkers = sortedByName(a.workerIds.map(id => rosterById[id]).filter(Boolean));
     const namesHtml = sortedWorkers.length
@@ -587,12 +598,87 @@ function renderUnassigned() {
   // the old whole-active-roster behavior for those.
   const workingIds = Array.isArray(finalized.workingIds) ? new Set(finalized.workingIds) : null;
   const unassigned = sortedByName(roster.filter(w => w.active && (!workingIds || workingIds.has(w.id)) && !assignedIds.has(w.id)));
-  if (!unassigned.length) {
-    panel.style.display = "none";
-    return;
-  }
+  // Kept visible even when empty — same reasoning as review_correct.html's
+  // unassigned tray: this has to stay a valid tap target for tap-to-move
+  // (moving someone here to un-assign them) even when nobody is currently
+  // sitting in it.
   panel.style.display = "block";
-  el.innerHTML = unassigned.map(w => `<span class="worker-tag" data-worker-id="${w.id}" data-from-zone="unassigned"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("");
+  el.innerHTML = unassigned.length
+    ? unassigned.map(w => `<span class="worker-tag" data-worker-id="${w.id}" data-from-zone="unassigned"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>`).join("")
+    : '<span class="empty-hint">everyone assigned tonight has a zone</span>';
+}
+
+// ---------------------------------------------------------------------------
+// Performance history — a real, tracked number per worker (their measured
+// rate as a % of the 1-case-per-minute baseline), accumulated across every
+// night they've logged actual hours on a case-rate zone. This is
+// deliberately separate from the on_pace/needs_improvement/new tier system
+// above (markZoneDone still nudges that after every single night on a
+// single-sample threshold) — this is the longer memory: weeks of samples,
+// so real trends show up instead of one rough night swinging a label.
+//
+// Only case_rate zones (grocery A-H, Juice) count — Dairy/Frozen are fixed
+// duration regardless of headcount, so there's no case-rate to measure
+// against. Juice's flat hidden water-restocking hour is subtracted out of
+// its actual time first, so that fixed, non-case-driven task doesn't drag
+// juice workers' case-handling number down for something no case count
+// ever captured.
+//
+// Can't distinguish individuals working the same zone at the same time —
+// everyone sharing a zone that night gets the same sample. That's a real
+// limit (a strong partner can carry a weak one, or vice versa), but over
+// enough nights on different pairings the noise should average out into a
+// usable trend, which is what this is for.
+// ---------------------------------------------------------------------------
+function loadPerformanceHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(PERF_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function savePerformanceHistory(history) {
+  localStorage.setItem(PERF_KEY, JSON.stringify(history));
+}
+
+function shiftDateKey(now) {
+  // Same "which shift is this" logic as computeShiftBreakdown's start-time
+  // math below — a night that runs past midnight still belongs to the
+  // calendar date the shift started on, so editing the same zone's actual
+  // hours twice in one night overwrites one sample instead of piling up.
+  const start = getShiftStart(now);
+  return start.toISOString().slice(0, 10);
+}
+
+function recordPerformanceSample(zoneId, actualHours) {
+  const zone = zoneById[zoneId];
+  const a = assignments[zoneId];
+  if (!zone || zone.estimationMethod !== "case_rate") return;
+  if (!a || !a.workerIds || !a.workerIds.length) return;
+  if (actualHours == null || actualHours <= 0) return;
+
+  const group = a.workerIds.map(id => rosterById[id]).filter(Boolean);
+  if (!group.length) return;
+
+  const hiddenHours = zone.department === "juice" ? settings.juiceHiddenTaskHours : 0;
+  const caseHandlingHours = Math.max(0.01, actualHours - hiddenHours);
+  const baselinePersonMinutes = zone.caseCount / settings.casePerMinuteRate;
+  const actualPersonMinutes = caseHandlingHours * 60 * AE.effectiveCapacity(group, settings);
+  if (actualPersonMinutes <= 0) return;
+
+  const sampleKey = `${zoneId}::${shiftDateKey(new Date())}`;
+  const history = loadPerformanceHistory();
+  for (const w of group) {
+    if (!history[w.id]) history[w.id] = { samples: {} };
+    history[w.id].samples[sampleKey] = {
+      zoneId,
+      baselinePersonMinutes,
+      actualPersonMinutes,
+      at: new Date().toISOString(),
+    };
+  }
+  savePerformanceHistory(history);
 }
 
 function wireActualTimeInputs() {
@@ -601,6 +687,7 @@ function wireActualTimeInputs() {
       const zid = input.dataset.zoneId;
       const val = input.value.trim();
       assignments[zid].actualHours = val === "" ? null : Math.max(0, parseFloat(val) || 0);
+      recordPerformanceSample(zid, assignments[zid].actualHours);
       persist();
       renderAll();
       const status = document.getElementById("statusMsg");
@@ -644,6 +731,7 @@ function renderAll() {
   renderUnassigned();
   wireActualTimeInputs();
   wireZoneDoneButtons();
+  updateSelectionUI(); // re-apply selected/tap-target classes to the freshly-rendered elements
 }
 
 // ---------------------------------------------------------------------------
@@ -737,6 +825,7 @@ function markZoneDone(zoneId) {
   const b = computeShiftBreakdown(now);
   a.actualHours = Math.round(b.netHours * 100) / 100;
   a.doneAt = now.toISOString();
+  recordPerformanceSample(zoneId, a.actualHours);
 
   const deltaPct = a.workloadHours ? (a.actualHours - a.workloadHours) / a.workloadHours : 0;
   const changes = [];
@@ -876,6 +965,118 @@ if ("Notification" in window && Notification.permission === "default") {
 setInterval(checkDueAlerts, 20000);
 
 // ---------------------------------------------------------------------------
+// Tap-to-move — same mechanism as Assignment: tap a worker, then tap a zone
+// (or "Not Assigned Tonight") to place them there. This is the touch
+// alternative to drag-and-drop, and now works on the live schedule too, not
+// just before finalize — moving someone here updates the finalized plan
+// directly.
+// ---------------------------------------------------------------------------
+function recomputeScheduleZone(zid) {
+  const zone = zoneById[zid];
+  const a = assignments[zid];
+  if (!zone || !a) return;
+  const group = (a.workerIds || []).map(id => rosterById[id]).filter(Boolean);
+  if (zone.estimationMethod !== "fixed_duration") {
+    a.workloadHours = AE.workloadHoursFor(zone, group, settings);
+  }
+  a.flatHours = flatHoursFor(zone, group.length);
+}
+
+function moveWorkerOnSchedule(workerId, fromZone, toZone) {
+  if (fromZone === toZone) return;
+  if (fromZone && fromZone !== "unassigned" && assignments[fromZone]) {
+    const idx = assignments[fromZone].workerIds.indexOf(workerId);
+    if (idx >= 0) assignments[fromZone].workerIds.splice(idx, 1);
+    recomputeScheduleZone(fromZone);
+  }
+  if (toZone !== "unassigned" && assignments[toZone]) {
+    if (!assignments[toZone].workerIds.includes(workerId)) {
+      assignments[toZone].workerIds.push(workerId);
+    }
+    recomputeScheduleZone(toZone);
+  }
+  persist();
+  renderAll();
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+let selectedWorkerId = null;
+let selectedFromZone = null;
+
+function selectWorkerForMove(workerId, fromZone) {
+  if (selectedWorkerId === workerId) {
+    // tapping the already-selected chip again cancels the move
+    selectedWorkerId = null;
+    selectedFromZone = null;
+  } else {
+    selectedWorkerId = workerId;
+    selectedFromZone = fromZone;
+  }
+  updateSelectionUI();
+}
+
+function handleZoneTapTarget(toZone) {
+  if (!selectedWorkerId) return;
+  const workerId = selectedWorkerId;
+  const fromZone = selectedFromZone;
+  selectedWorkerId = null;
+  selectedFromZone = null;
+  moveWorkerOnSchedule(workerId, fromZone, toZone); // re-renders, which clears the (already-null) selection UI too
+}
+
+function updateSelectionUI() {
+  document.querySelectorAll(".worker-tag[data-worker-id]").forEach(tag => {
+    tag.classList.toggle("selected", tag.dataset.workerId === selectedWorkerId);
+  });
+  const active = !!selectedWorkerId;
+  document.querySelectorAll(".zone-row").forEach(row => row.classList.toggle("tap-target", active));
+  const panel = document.getElementById("unassignedPanel");
+  if (panel) panel.classList.toggle("tap-target", active);
+
+  const hint = document.getElementById("tapMoveHint");
+  if (hint) {
+    if (active) {
+      const worker = rosterById[selectedWorkerId];
+      hint.style.display = "block";
+      hint.textContent = `Moving ${worker ? worker.name : "worker"} — tap a zone (or "Not Assigned Tonight") to place them there, or tap them again to cancel.`;
+    } else {
+      hint.style.display = "none";
+    }
+  }
+}
+
+// Wired ONCE via event delegation on document, rather than re-attaching a
+// listener on every render (zone rows and worker tags get torn down and
+// recreated every renderZoneList()/renderUnassigned() call).
+function initTapToMove() {
+  document.addEventListener("click", e => {
+    // A long-press on this same tag just fired (see initBubbleLongPress
+    // below) — swallow the click it also generates so it doesn't ALSO
+    // select the worker for tap-to-move right after opening the bubble
+    // menu.
+    if (longPressFired) {
+      longPressFired = false;
+      return;
+    }
+    const tag = e.target.closest(".worker-tag[data-worker-id]");
+    if (tag) {
+      selectWorkerForMove(tag.dataset.workerId, tag.dataset.fromZone);
+      return;
+    }
+    const row = e.target.closest(".zone-row[data-zone-id]");
+    if (row) {
+      handleZoneTapTarget(row.dataset.zoneId);
+      return;
+    }
+    if (e.target.closest("#unassignedPanel")) {
+      handleZoneTapTarget("unassigned");
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Long-press a worker bubble (in a zone, or in Not Assigned Tonight) to
 // bring up an Edit / Remove / Delete menu — same behavior as the bubbles on
 // Review & Correct.
@@ -969,6 +1170,7 @@ function showBubbleMenu(workerId, fromZone, x, y) {
 
 let longPressTimer = null;
 let longPressStartPos = null;
+let longPressFired = false;
 const LONG_PRESS_MS = 550;
 const LONG_PRESS_MOVE_CANCEL_PX = 10;
 
@@ -976,8 +1178,10 @@ function beginLongPress(e, tag) {
   const point = e.touches ? e.touches[0] : e;
   if (!point) return;
   longPressStartPos = { x: point.clientX, y: point.clientY };
+  longPressFired = false;
   clearTimeout(longPressTimer);
   longPressTimer = setTimeout(() => {
+    longPressFired = true;
     showBubbleMenu(tag.dataset.workerId, tag.dataset.fromZone, point.clientX, point.clientY);
   }, LONG_PRESS_MS);
 }
@@ -1016,6 +1220,7 @@ function initBubbleLongPress() {
 }
 
 initBubbleLongPress();
+initTapToMove();
 
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
 
