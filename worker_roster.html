@@ -327,10 +327,22 @@
     <div class="modal">
       <h2>Import Names from Photo</h2>
       <div class="modal-sub">
-        This only reads names — ratings, partners, and everything else still need to be set per-worker afterward. Runs entirely on your device; nothing is uploaded anywhere. Works best with a clear, well-lit, straight-on photo of printed text — handwriting and blurry/angled shots read a lot worse, so double-check the review list below carefully either way.
+        This only reads names — ratings, partners, and everything else still need to be set per-worker afterward. Runs entirely on your device; nothing is uploaded anywhere.
       </div>
 
       <div class="field">
+        <label>Recommended: paste text from your phone's own text recognition</label>
+        <div class="modal-sub" style="margin-bottom:8px;">
+          The in-app scanner below is convenient but genuinely less accurate than what's already built into your phone. For a cleaner result: open the photo, use Google Lens / "Select text" (Android) or Live Text (iPhone — tap the photo, then the text-select icon), copy the recognized names, and paste them here.
+        </div>
+        <textarea id="pastedNameText" rows="6" style="width:100%; background:var(--panel-2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px; font-family:inherit; font-size:13px;" placeholder="Paste copied names here, one per line…"></textarea>
+        <div style="margin-top:8px;">
+          <button type="button" class="primary" id="btnParsePastedNames">Parse Pasted Text</button>
+        </div>
+      </div>
+
+      <div class="field" style="border-top:1px solid var(--border); padding-top:14px;">
+        <label>Or: scan a photo in-app <span class="muted" style="font-weight:400;">(slower, less reliable — handwriting and small/angled text read especially poorly)</span></label>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
           <button type="button" id="btnTakePhoto">📷 Take Photo</button>
           <button type="button" id="btnChooseFromLibrary">🖼️ Choose from Library</button>
@@ -790,23 +802,27 @@ function loadTesseract() {
 // washed-out phone photo doesn't leave Tesseract guessing at low-contrast
 // gray-on-gray text.
 //
-// Two corrections from the first pass at this: the old 1800px cap was
-// chosen purely to keep processing fast, but it was almost certainly
-// working against accuracy on a dense sheet — a 20+ row table downscaled
-// to 1800px can leave individual characters only a few pixels tall, which
-// is well below what any OCR engine reads reliably (Tesseract wants
-// roughly 20-30px of character height to work with). Raised the cap so
-// small dense text stays legible. And plain grayscale does nothing about
-// a photo that's just dim or low-contrast to begin with — added a min/max
-// contrast stretch so faint text gets pushed toward real black-on-white
-// instead of staying gray-on-gray.
+// Found a real bug in the contrast stretch itself, worth calling out since
+// it's a good candidate for why results stayed bad even on photos that are
+// perfectly readable to a human: it was using the single darkest and
+// single lightest pixel in the WHOLE image as its reference points. One
+// stray shadow corner or one glare spot is enough to fool that — if
+// something in the photo is already near-black or near-white (even
+// somewhere totally irrelevant, like a shadow at the edge), the stretch
+// concludes the image already spans the full range and does nothing,
+// while the actual text — sitting in some narrow gray band — never gets
+// touched. Replaced with a percentile-based stretch (1st/99th percentile
+// of the brightness histogram, not literal min/max), which a small number
+// of outlier pixels can't derail. Also raised the resolution cap further —
+// downscaling more than necessary is the other direction this could have
+// been going wrong.
 function preprocessImageForOCR(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
       try {
-        const maxDim = 2600;
+        const maxDim = 3500;
         let { width, height } = img;
         if (width > maxDim || height > maxDim) {
           const scale = maxDim / Math.max(width, height);
@@ -821,22 +837,34 @@ function preprocessImageForOCR(file) {
         const imageData = ctx.getImageData(0, 0, width, height);
         const d = imageData.data;
 
-        // Pass 1: grayscale, tracking the darkest/lightest pixel as we go.
+        // Pass 1: grayscale, building a brightness histogram as we go.
         const gray = new Uint8ClampedArray(d.length / 4);
-        let min = 255, max = 0;
+        const histogram = new Array(256).fill(0);
         for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-          const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
           gray[p] = g;
-          if (g < min) min = g;
-          if (g > max) max = g;
+          histogram[g]++;
         }
-        // Pass 2: stretch that range out to the full 0-255 spread. Skip it
-        // on an already-flat/blank image (range this small is noise, not
-        // real contrast) so it doesn't amplify garbage.
-        const range = max - min;
+        // Find the 1st/99th percentile brightness values from the
+        // histogram instead of literal min/max, so a handful of outlier
+        // pixels can't convince the stretch there's nothing left to do.
+        const totalPixels = gray.length;
+        const lowBudget = totalPixels * 0.01;
+        const highBudget = totalPixels * 0.01;
+        let lo = 0, hi = 255, cum = 0;
+        for (let v = 0; v < 256; v++) {
+          cum += histogram[v];
+          if (cum > lowBudget) { lo = v; break; }
+        }
+        cum = 0;
+        for (let v = 255; v >= 0; v--) {
+          cum += histogram[v];
+          if (cum > highBudget) { hi = v; break; }
+        }
+        const range = Math.max(1, hi - lo);
         const scale = range > 15 ? 255 / range : 1;
         for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-          const v = Math.min(255, Math.max(0, Math.round((gray[p] - min) * scale)));
+          const v = Math.min(255, Math.max(0, Math.round((gray[p] - lo) * scale)));
           d[i] = d[i + 1] = d[i + 2] = v;
         }
 
@@ -945,6 +973,7 @@ function closePhotoModal() {
   document.getElementById("btnPhotoAdd").style.display = "none";
   document.getElementById("photoFileInputCamera").value = "";
   document.getElementById("photoFileInputLibrary").value = "";
+  document.getElementById("pastedNameText").value = "";
   document.getElementById("nameReviewList").innerHTML = "";
 }
 
@@ -1072,6 +1101,14 @@ document.getElementById("photoFileInputCamera").addEventListener("change", (e) =
 });
 document.getElementById("photoFileInputLibrary").addEventListener("change", (e) => {
   if (e.target.files[0]) handlePhotoFile(e.target.files[0]);
+});
+document.getElementById("btnParsePastedNames").addEventListener("click", () => {
+  const text = document.getElementById("pastedNameText").value;
+  const names = extractNameCandidatesFromOCRText(text);
+  setPhotoStatus(names.length ? `Found ${names.length} candidate line(s) — review below before adding.` : "Nothing recognizable in that paste — check it's plain text, or add lines manually below.");
+  renderNameReviewList(names);
+  document.getElementById("photoReviewWrap").style.display = "block";
+  document.getElementById("btnPhotoAdd").style.display = "inline-block";
 });
 document.getElementById("btnAddBlankNameRow").addEventListener("click", () => {
   document.getElementById("photoReviewWrap").style.display = "block";
