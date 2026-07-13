@@ -753,10 +753,15 @@ function reconstructRowsFromLines(lines) {
 //    look outright garbled rather than just slightly misread (it's not
 //    reporting what it saw, it's reporting its best guess at a word).
 // 2. tessedit_char_whitelist — this sheet's alphabet is small and known
-//    (digits, the "A" aisle prefix, and a couple of likely separators).
-//    Telling Tesseract that up front means it's never even considering,
-//    say, a letter that resembles a digit — one less way for a shaky photo
-//    to turn into noise.
+//    (digits, the "A" aisle prefix, and a couple of likely separators), so
+//    this is set as a hint. Worth knowing it's NOT a hard guarantee,
+//    though: the LSTM engine (the only one loaded here) doesn't strictly
+//    enforce a whitelist the way the older legacy engine does, and in
+//    testing it still let other letters through on small/thin digits. The
+//    real fix for that ended up being in parseCaseCountsFromOCRText below
+//    — correcting known letter/digit look-alikes after the fact, since
+//    Tesseract can't reliably be stopped from producing them in the first
+//    place.
 async function runCaseCountOCR(file, onProgress) {
   const image = await preprocessImageForOCR(file);
   const worker = await window.Tesseract.createWorker("eng", 1, {
@@ -779,33 +784,73 @@ async function runCaseCountOCR(file, onProgress) {
   }
 }
 
-// For each line, the last number on the line is treated as the case count;
-// any earlier number that matches a known aisle number maps to that zone.
-// Best-effort — the review table is where the person catches what this gets
-// wrong, not this function.
-// A zone can span more than one physical aisle (Zone A = aisles 2 AND 3,
-// etc.) — each aisle gets its own row on the sheet, so this has to ADD
-// each matched aisle's count into its zone's running total rather than
-// just keeping the last one it saw. (Previously this overwrote, so a zone
-// with two aisles silently ended up with just whichever aisle's row was
-// read last — not the two combined.)
+// tessedit_char_whitelist (set in runCaseCountOCR above) turned out NOT to
+// be a hard guarantee: Tesseract's LSTM engine (the only one loaded here)
+// doesn't strictly enforce a whitelist the way its older legacy engine
+// does — it can still emit a disallowed character if that's what its model
+// thinks it sees. That's exactly what came back: single-digit aisle
+// numbers reading as "A" followed by some other letter instead of a digit
+// (a 2 misread as "Z", a 1 as "l", a 5 as "S" — classic look-alike mixups,
+// small print makes them worse). Rather than keep leaning on Tesseract to
+// never produce those letters, this now expects them and fixes them: any
+// token shaped like "A<one or two characters>" gets those characters
+// mapped back to the digit they most likely were, via a small look-alike
+// table, before anything is compared against the aisle-to-zone map. This
+// only touches the aisle-label token — the case-count number elsewhere on
+// the line is left alone.
+const OCR_DIGIT_LOOKALIKES = {
+  O: "0", o: "0",
+  I: "1", l: "1", i: "1", "|": "1",
+  Z: "2", z: "2",
+  S: "5", s: "5",
+  G: "6",
+  B: "8",
+  g: "9", q: "9",
+};
+
+function normalizeAisleToken(token) {
+  const m = /^[Aa]([A-Za-z0-9]{1,2})$/.exec(token);
+  if (!m) return null;
+  const digits = [...m[1]].map(ch => (/[0-9]/.test(ch) ? ch : OCR_DIGIT_LOOKALIKES[ch]));
+  if (digits.some(d => d === undefined)) return null;
+  const num = parseInt(digits.join(""), 10);
+  return Number.isNaN(num) ? null : num;
+}
+
+// Finds the aisle-label token on a line first (correcting look-alike
+// letters as above), then takes the last plain number found elsewhere on
+// that same line as the case count — so a misread digit inside the aisle
+// label itself never gets mistaken for the count. A zone can span more
+// than one physical aisle (Zone A = aisles 2 AND 3, etc.), so each aisle's
+// count gets ADDED into that zone's running total rather than overwriting
+// it — otherwise a two-aisle zone would silently end up with just
+// whichever aisle's row was read last, not the two combined.
 function parseCaseCountsFromOCRText(rawText) {
   const results = {};
   const lines = rawText.split(/\r?\n/);
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    const numberMatches = [...line.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
-    if (numberMatches.length < 2) continue;
+    const tokens = line.split(/\s+/).filter(Boolean);
+
+    let aisleNum = null;
+    let aisleTokenIndex = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      const n = normalizeAisleToken(tokens[i]);
+      if (n !== null) { aisleNum = n; aisleTokenIndex = i; break; }
+    }
+    if (aisleNum === null) continue;
+    const zid = AISLE_NUMBER_TO_ZONE[aisleNum];
+    if (!zid) continue;
+
+    const remainder = tokens.filter((_, i) => i !== aisleTokenIndex).join(" ");
+    const numberMatches = [...remainder.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
+    if (!numberMatches.length) continue;
     const caseCount = numberMatches[numberMatches.length - 1];
-    const aisleNumbers = numberMatches.slice(0, -1);
-    const matchedZones = new Set();
-    aisleNumbers.forEach(n => { if (AISLE_NUMBER_TO_ZONE[n]) matchedZones.add(AISLE_NUMBER_TO_ZONE[n]); });
-    matchedZones.forEach(zid => {
-      if (!results[zid]) results[zid] = { count: 0, sourceLines: [] };
-      results[zid].count += caseCount;
-      results[zid].sourceLines.push(line);
-    });
+
+    if (!results[zid]) results[zid] = { count: 0, sourceLines: [] };
+    results[zid].count += caseCount;
+    results[zid].sourceLines.push(line);
   }
   return results;
 }
