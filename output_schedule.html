@@ -186,6 +186,41 @@
 
   .status-msg { font-size: 12px; color: var(--green); }
 
+  .finish-panel-body { font-size: 13px; line-height: 1.7; }
+  .finish-panel-body .breakdown-line { color: var(--text-dim); }
+  .finish-panel-body .breakdown-line b { color: var(--text); }
+  .finish-panel-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .net-hours-input {
+    width: 70px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 6px;
+    border-radius: 5px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .rating-review-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .rating-review-row:last-child { border-bottom: none; }
+  .rating-review-row .rr-name { min-width: 130px; font-weight: 600; }
+  .rating-review-row .rr-why { color: var(--text-dim); font-size: 12px; flex: 1 1 auto; min-width: 160px; }
+  .rating-review-row select {
+    font: inherit;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 4px 6px;
+  }
+
   @media print {
     body { background: #fff; color: #000; padding: 10px; }
     .nav-row, .meta-bar .actions, button, .no-print { display: none !important; }
@@ -224,7 +259,24 @@
       <span class="meta-text" id="metaText"></span>
       <div class="actions no-print">
         <span class="status-msg" id="statusMsg"></span>
+        <button id="btnFinishNight">Finish Night</button>
         <button id="btnPrint">Print</button>
+      </div>
+    </div>
+
+    <div class="panel no-print" id="finishPanel" style="display:none;">
+      <h3>Finish Night — Log Time</h3>
+      <div class="finish-panel-body" id="finishPanelBody"></div>
+      <div class="finish-panel-actions" id="finishPanelActions"></div>
+    </div>
+
+    <div class="panel no-print" id="ratingReviewPanel" style="display:none;">
+      <h3>Suggested Rating Changes</h3>
+      <div class="finish-panel-body" id="ratingReviewIntro"></div>
+      <div id="ratingReviewList"></div>
+      <div class="finish-panel-actions">
+        <button class="primary" id="btnSaveRatings">Save Rating Changes</button>
+        <button id="btnSkipRatings">Skip — Leave Ratings As-Is</button>
       </div>
     </div>
 
@@ -482,7 +534,12 @@ function renderUnassigned() {
   const panel = document.getElementById("unassignedPanel");
   const el = document.getElementById("unassignedList");
   const assignedIds = new Set(Object.values(assignments).flatMap(a => a.workerIds));
-  const unassigned = sortedByName(roster.filter(w => w.active && !assignedIds.has(w.id)));
+  // Only flag as "unassigned" someone who was actually part of tonight's
+  // crew — not everyone on the whole roster. Schedules finalized before
+  // Tonight's Crew existed won't have workingIds recorded; fall back to
+  // the old whole-active-roster behavior for those.
+  const workingIds = Array.isArray(finalized.workingIds) ? new Set(finalized.workingIds) : null;
+  const unassigned = sortedByName(roster.filter(w => w.active && (!workingIds || workingIds.has(w.id)) && !assignedIds.has(w.id)));
   if (!unassigned.length) {
     panel.style.display = "none";
     return;
@@ -539,6 +596,215 @@ function renderAll() {
   renderUnassigned();
   wireActualTimeInputs();
 }
+
+// ---------------------------------------------------------------------------
+// Finish Night — clock-based actual hours + rating suggestions
+// ---------------------------------------------------------------------------
+// Shift always starts 10:20 PM. Three scheduled breaks come out of the
+// clock once each one has actually happened by the time the button is
+// pressed: a 15-min break at midnight, a 60-min lunch at 2:00 AM, and a
+// 15-min break at 5:00 AM. A break that hasn't happened yet (short night,
+// early finish) isn't deducted; a break that was mid-way through when the
+// button was pressed only has its elapsed portion deducted.
+const SHIFT_START = { hour: 22, minute: 20 };
+const SHIFT_BREAKS = [
+  { label: "Midnight break", hour: 0, minute: 0, durationMin: 15 },
+  { label: "Lunch", hour: 2, minute: 0, durationMin: 60 },
+  { label: "5:00 AM break", hour: 5, minute: 0, durationMin: 15 },
+];
+
+function getShiftStart(now) {
+  const start = new Date(now);
+  start.setHours(SHIFT_START.hour, SHIFT_START.minute, 0, 0);
+  if (start > now) start.setDate(start.getDate() - 1);
+  return start;
+}
+
+function computeShiftBreakdown(now) {
+  const start = getShiftStart(now);
+  const rawMinutes = Math.max(0, (now - start) / 60000);
+
+  const breakDetails = SHIFT_BREAKS.map(b => {
+    const breakStart = new Date(start);
+    // Breaks (midnight/2am/5am) fall on the calendar day after the shift
+    // started (10:20pm), since start's own date's midnight/2am/5am already
+    // passed hours before the shift began.
+    breakStart.setDate(start.getDate() + 1);
+    breakStart.setHours(b.hour, b.minute, 0, 0);
+    const breakEnd = new Date(breakStart.getTime() + b.durationMin * 60000);
+    let deducted = 0;
+    if (now >= breakEnd) deducted = b.durationMin;
+    else if (now > breakStart) deducted = (now - breakStart) / 60000;
+    return { label: b.label, durationMin: b.durationMin, deducted, applied: deducted > 0 };
+  });
+
+  const deductedMinutes = breakDetails.reduce((s, b) => s + b.deducted, 0);
+  const netMinutes = Math.max(0, rawMinutes - deductedMinutes);
+
+  return {
+    start, now,
+    rawHours: rawMinutes / 60,
+    deductedHours: deductedMinutes / 60,
+    netHours: netMinutes / 60,
+    breakDetails,
+  };
+}
+
+function formatClock(d) {
+  return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
+let pendingBreakdown = null;
+
+function renderFinishPanel() {
+  const now = new Date();
+  pendingBreakdown = computeShiftBreakdown(now);
+  const b = pendingBreakdown;
+
+  const breakLines = b.breakDetails.map(bd => {
+    const status = bd.deducted <= 0
+      ? "hasn't happened yet — not deducted"
+      : bd.deducted < bd.durationMin
+        ? `partially elapsed — ${bd.deducted.toFixed(0)} of ${bd.durationMin} min deducted`
+        : `deducted (${bd.durationMin} min)`;
+    return `<div class="breakdown-line">${bd.label}: ${status}</div>`;
+  }).join("");
+
+  const warn = (b.rawHours > 13 || b.rawHours < 2)
+    ? `<div class="breakdown-line" style="color:var(--amber);">That's ${b.rawHours.toFixed(2)}h raw since 10:20 PM — double check the time on this device before saving.</div>`
+    : "";
+
+  document.getElementById("finishPanelBody").innerHTML = `
+    <div class="breakdown-line">Shift start: <b>${formatClock(b.start)}</b> &nbsp;→&nbsp; Now: <b>${formatClock(b.now)}</b></div>
+    <div class="breakdown-line">Raw elapsed: <b>${b.rawHours.toFixed(2)}h</b></div>
+    ${breakLines}
+    <div class="breakdown-line">Breaks deducted: <b>${b.deductedHours.toFixed(2)}h</b></div>
+    ${warn}
+    <div class="breakdown-line" style="margin-top:6px;">
+      Net actual hours to apply to every logged zone tonight:
+      <input type="number" step="0.01" min="0" class="net-hours-input" id="netHoursOverride" value="${b.netHours.toFixed(2)}">h
+    </div>
+  `;
+  document.getElementById("finishPanelActions").innerHTML = `
+    <button class="primary" id="btnConfirmFinish">Apply to All Zones</button>
+    <button id="btnCancelFinish">Cancel</button>
+  `;
+  document.getElementById("finishPanel").style.display = "block";
+  document.getElementById("ratingReviewPanel").style.display = "none";
+
+  document.getElementById("btnConfirmFinish").addEventListener("click", () => {
+    const override = parseFloat(document.getElementById("netHoursOverride").value);
+    const netHours = Number.isFinite(override) ? Math.max(0, override) : b.netHours;
+    applyFinishNight(netHours);
+  });
+  document.getElementById("btnCancelFinish").addEventListener("click", () => {
+    document.getElementById("finishPanel").style.display = "none";
+  });
+}
+
+function applyFinishNight(netHours) {
+  Object.values(assignments).forEach(a => {
+    if (a.workerIds && a.workerIds.length) a.actualHours = netHours;
+  });
+  persist();
+  renderAll();
+  document.getElementById("finishPanel").style.display = "none";
+
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Time saved";
+  setTimeout(() => { if (status.textContent === "Time saved") status.textContent = ""; }, 2000);
+
+  renderRatingReview();
+}
+
+// A worker performing significantly faster or slower than the zone's
+// Adjusted estimate gets a suggested rating nudge — never auto-applied,
+// always shown for review first. New hires are left alone; one night
+// isn't enough to graduate or flag someone still on probation.
+const RATING_THRESHOLD = 0.15;
+
+function buildRatingSuggestions() {
+  const perWorkerDeltas = {}; // id -> [deltaPct, ...]
+  Object.values(assignments).forEach(a => {
+    if (a.actualHours == null || !a.workloadHours || !a.workerIds || !a.workerIds.length) return;
+    const deltaPct = (a.actualHours - a.workloadHours) / a.workloadHours;
+    a.workerIds.forEach(id => {
+      if (!rosterById[id]) return;
+      (perWorkerDeltas[id] = perWorkerDeltas[id] || []).push(deltaPct);
+    });
+  });
+
+  const suggestions = [];
+  Object.entries(perWorkerDeltas).forEach(([id, deltas]) => {
+    const worker = rosterById[id];
+    if (!worker || worker.productionRating === "new") return;
+    const avg = deltas.reduce((s, d) => s + d, 0) / deltas.length;
+    let suggested = null;
+    let why = "";
+    if (worker.productionRating === "needs_improvement" && avg <= -RATING_THRESHOLD) {
+      suggested = "on_pace";
+      why = `Finished ${Math.abs(avg * 100).toFixed(0)}% faster than the adjusted estimate tonight.`;
+    } else if (worker.productionRating === "on_pace" && avg >= RATING_THRESHOLD) {
+      suggested = "needs_improvement";
+      why = `Finished ${(avg * 100).toFixed(0)}% slower than the adjusted estimate tonight.`;
+    }
+    if (suggested) suggestions.push({ id, worker, suggested, why });
+  });
+
+  return sortedByName(suggestions.map(s => s.worker)).map(w => suggestions.find(s => s.worker.id === w.id));
+}
+
+function renderRatingReview() {
+  const suggestions = buildRatingSuggestions();
+  const panel = document.getElementById("ratingReviewPanel");
+  if (!suggestions.length) {
+    panel.style.display = "none";
+    return;
+  }
+  document.getElementById("ratingReviewIntro").innerHTML =
+    `<div class="breakdown-line">Based on tonight's actual vs. adjusted hours. Nothing is saved until you hit Save below — adjust any of these first if you'd rather not change one.</div>`;
+
+  const list = document.getElementById("ratingReviewList");
+  list.innerHTML = suggestions.map(s => `
+    <div class="rating-review-row" data-worker-id="${s.id}">
+      <span class="rr-name">${s.worker.name}</span>
+      <span class="rr-why">${ratingLabel(s.worker.productionRating)} → ${s.why}</span>
+      <select class="rr-select">
+        <option value="${s.worker.productionRating}">Keep: ${ratingLabel(s.worker.productionRating)}</option>
+        <option value="${s.suggested}" selected>Change to: ${ratingLabel(s.suggested)}</option>
+      </select>
+    </div>
+  `).join("");
+  panel.style.display = "block";
+}
+
+function ratingLabel(r) {
+  return { on_pace: "On Pace", needs_improvement: "Needs Improvement", new: "New" }[r] || r;
+}
+
+function saveRosterBack() {
+  localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
+}
+
+document.getElementById("btnFinishNight").addEventListener("click", renderFinishPanel);
+
+document.getElementById("btnSaveRatings").addEventListener("click", () => {
+  document.querySelectorAll(".rating-review-row").forEach(row => {
+    const id = row.dataset.workerId;
+    const value = row.querySelector(".rr-select").value;
+    if (rosterById[id]) rosterById[id].productionRating = value;
+  });
+  saveRosterBack();
+  document.getElementById("ratingReviewPanel").style.display = "none";
+  renderAll();
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Ratings saved";
+  setTimeout(() => { if (status.textContent === "Ratings saved") status.textContent = ""; }, 2000);
+});
+
+document.getElementById("btnSkipRatings").addEventListener("click", () => {
+  document.getElementById("ratingReviewPanel").style.display = "none";
+});
 
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
 

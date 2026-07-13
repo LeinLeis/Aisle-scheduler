@@ -222,7 +222,6 @@
           <th>Incompatible</th>
           <th>Locked With</th>
           <th>Department</th>
-          <th></th>
         </tr>
       </thead>
       <tbody id="rosterBody"></tbody>
@@ -555,16 +554,18 @@ function renderTable() {
     else if (worker.departmentRotationPool) deptHtml = `<span class="tag dept">${worker.departmentRotationPool === "dairy" ? "Dairy" : "Frozen"} (rotation)</span>`;
 
     tr.innerHTML = `
-      <td class="name-cell">${worker.name}${worker.active ? "" : ' <span class="muted">(inactive)</span>'}<span class="id-tag">${worker.id}</span></td>
+      <td class="name-cell">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button data-edit="${worker.id}" style="flex-shrink:0; padding:4px 9px; font-size:12px;">Edit</button>
+          <div>${worker.name}${worker.active ? "" : ' <span class="muted">(inactive)</span>'}<span class="id-tag">${worker.id}</span></div>
+        </div>
+      </td>
       <td><span class="pill pill-${worker.productionRating}">${ratingLabel(worker.productionRating)}</span>${worker.unsuitableForNewHires ? '<div class="hint" style="margin-top:4px;">Unsuitable for new hires</div>' : ""}</td>
       <td>${zonesText}</td>
       <td>${partnersHtml}</td>
       <td>${incompatHtml}</td>
       <td>${lockedHtml}</td>
       <td>${deptHtml}</td>
-      <td class="row-actions">
-        <button data-edit="${worker.id}">Edit</button>
-      </td>
     `;
     body.appendChild(tr);
   }
@@ -1032,13 +1033,14 @@ function addCheckedNamesAsWorkers() {
   // "-2" id tag next to an otherwise-identical name. Match case/whitespace-
   // insensitively, same as the OCR-line de-dupe above.
   const normalize = s => s.toLowerCase().trim().replace(/\s+/g, " ");
+  const checkedKeys = new Set(namesChecked.map(normalize));
   const existingNames = new Set(roster.map(w => normalize(w.name)));
   const namesToAdd = [];
-  let skippedCount = 0;
+  let matchedExistingCount = 0;
   namesChecked.forEach(name => {
     const key = normalize(name);
     if (existingNames.has(key)) {
-      skippedCount++;
+      matchedExistingCount++;
       return;
     }
     existingNames.add(key);
@@ -1056,15 +1058,41 @@ function addCheckedNamesAsWorkers() {
     });
   });
 
+  // Importing a list is a full reset of who's active, not an add-on-top.
+  // The workflow is: photograph/paste tonight's ~25-person crew out of a
+  // ~37-person roster. Active should mean "on the list just imported" —
+  // not "was active on some earlier night and never got toggled off."
+  // So every worker matching a checked name goes active, and every other
+  // roster worker goes inactive, right here, instead of quietly
+  // accumulating active flags import after import.
+  let turnedOffCount = 0;
+  roster.forEach(w => {
+    const shouldBeActive = checkedKeys.has(normalize(w.name));
+    if (w.active && !shouldBeActive) turnedOffCount++;
+    w.active = shouldBeActive;
+  });
+
+  // Tonight's Crew (Review & Correct) normally carries a saved selection
+  // forward night to night and only un-checks people who dropped off the
+  // active roster — it never auto-checks someone newly active, so without
+  // this, Dan would still have to flip over to that screen and manually
+  // re-check everyone this import just activated. Since the import IS
+  // tonight's list, write it straight into that saved selection too, so
+  // Review & Correct opens with exactly this crew already selected.
+  const activeIds = roster.filter(w => w.active).map(w => w.id);
+  try {
+    localStorage.setItem("aisleScheduler_tonightCrew_v1", JSON.stringify(activeIds));
+  } catch (e) { /* non-fatal — worst case Tonight's Crew needs a manual check-over */ }
+
   saveRoster();
   renderTable();
   closePhotoModal();
-  const skippedNote = skippedCount ? ` (${skippedCount} skipped — already on the roster.)` : "";
-  if (namesToAdd.length) {
-    alert(`Added ${namesToAdd.length} worker(s).${skippedNote} Ratings, partners, and everything else still default to blank — edit each one to fill those in.`);
-  } else {
-    alert(`Nothing added — everyone checked is already on the roster.`);
-  }
+  const parts = [];
+  if (namesToAdd.length) parts.push(`${namesToAdd.length} new`);
+  if (matchedExistingCount) parts.push(`${matchedExistingCount} already on the roster`);
+  const addedNote = parts.length ? ` (${parts.join(", ")}).` : ".";
+  const offNote = turnedOffCount ? ` ${turnedOffCount} other worker(s) not on this list were marked inactive.` : "";
+  alert(`Active roster set to these ${namesChecked.length} worker(s)${addedNote}${offNote} Ratings, partners, and everything else still default to blank on new workers — edit each one to fill those in.`);
 }
 
 // ---------------------------------------------------------------------------
