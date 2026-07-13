@@ -854,24 +854,18 @@ function normalizeAisleToken(token) {
   return Number.isNaN(num) ? null : num;
 }
 
-// Finds the aisle-label token on a line first (correcting look-alike
-// letters as above), then takes the last plain number found elsewhere on
-// that same line as the case count — so a misread digit inside the aisle
-// label itself never gets mistaken for the count. A zone can span more
-// than one physical aisle (Zone A = aisles 2 AND 3, etc.), so each aisle's
-// count gets ADDED into that zone's running total rather than overwriting
-// it — otherwise a two-aisle zone would silently end up with just
-// whichever aisle's row was read last, not the two combined.
-function parseCaseCountsFromOCRText(rawText) {
+// Strategy 1: aisle label and its count on the SAME line (what a photo of
+// the sheet read via Tesseract tends to produce, once rows are correctly
+// reconstructed — see reconstructRowsFromLines above). Finds the aisle
+// token first (correcting look-alike letters), then takes the last plain
+// number found elsewhere on that line as the count, so a misread digit
+// inside the aisle label itself is never mistaken for the count.
+function parseCaseCountsPerLine(rawLines) {
   const results = {};
-  const lines = rawText.split(/\r?\n/);
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  let matchedZones = 0;
+  for (const line of rawLines) {
     const tokens = line.split(/\s+/).filter(Boolean);
-
-    let aisleNum = null;
-    let aisleTokenIndex = -1;
+    let aisleNum = null, aisleTokenIndex = -1;
     for (let i = 0; i < tokens.length; i++) {
       const n = normalizeAisleToken(tokens[i]);
       if (n !== null) { aisleNum = n; aisleTokenIndex = i; break; }
@@ -885,11 +879,64 @@ function parseCaseCountsFromOCRText(rawText) {
     if (!numberMatches.length) continue;
     const caseCount = numberMatches[numberMatches.length - 1];
 
-    if (!results[zid]) results[zid] = { count: 0, sourceLines: [] };
+    if (!results[zid]) { results[zid] = { count: 0, sourceLines: [] }; matchedZones++; }
     results[zid].count += caseCount;
     results[zid].sourceLines.push(line);
   }
-  return results;
+  return { results, matchedZones };
+}
+
+// Strategy 2: aisle label and its count on SEPARATE lines — this is what
+// Google Lens/Live Text actually produce when you copy a two-column table:
+// "A2", "264", "A3", "92", ... one value per line, alternating, rather
+// than paired on one line. Walks the lines in order, splitting them into
+// an "aisle label" stream and a "bare number" stream, then pairs the two
+// streams positionally (the Nth label seen goes with the Nth number seen).
+// That works whether the source interleaves them (label, count, label,
+// count...) or groups them into two blocks (all labels, then all
+// counts) — either way the two streams stay in the same relative order.
+function parseCaseCountsPositional(rawLines) {
+  const aisleSequence = [];
+  const countSequence = [];
+  for (const line of rawLines) {
+    const aisleOnly = normalizeAisleToken(line);
+    if (aisleOnly !== null) { aisleSequence.push(aisleOnly); continue; }
+    if (/^\d+$/.test(line)) { countSequence.push(parseInt(line, 10)); continue; }
+    // A line with both a label and other text still feeds the label
+    // stream, so a paste that's mostly separated but has a stray combined
+    // line still lines up positionally.
+    const tokens = line.split(/\s+/).filter(Boolean);
+    for (const t of tokens) {
+      const n = normalizeAisleToken(t);
+      if (n !== null) { aisleSequence.push(n); break; }
+    }
+  }
+
+  const results = {};
+  let matchedZones = 0;
+  const n = Math.min(aisleSequence.length, countSequence.length);
+  for (let i = 0; i < n; i++) {
+    const zid = AISLE_NUMBER_TO_ZONE[aisleSequence[i]];
+    if (!zid) continue;
+    if (!results[zid]) { results[zid] = { count: 0, sourceLines: [] }; matchedZones++; }
+    results[zid].count += countSequence[i];
+    results[zid].sourceLines.push(`A${aisleSequence[i]} → ${countSequence[i]}`);
+  }
+  return { results, matchedZones };
+}
+
+// A zone can span more than one physical aisle (Zone A = aisles 2 AND 3,
+// etc.), so either strategy ADDS each matched aisle's count into its
+// zone's running total rather than overwriting it — otherwise a two-aisle
+// zone would silently end up with just whichever aisle's row was read
+// last, not the two combined.
+function parseCaseCountsFromOCRText(rawText) {
+  const rawLines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const perLine = parseCaseCountsPerLine(rawLines);
+  const positional = parseCaseCountsPositional(rawLines);
+  // Whichever strategy actually matched more zones is almost certainly the
+  // one that fits this particular source's format.
+  return positional.matchedZones > perLine.matchedZones ? positional.results : perLine.results;
 }
 
 function renderCaseReviewList(parsed) {
