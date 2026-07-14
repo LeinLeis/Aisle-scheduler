@@ -130,6 +130,17 @@
     font-family: inherit;
   }
   .water-pallet-row .wp-cpp-label { font-size: 11px; color: var(--text-dim); }
+  .water-pallet-row .wp-raw {
+    width: 90px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 5px;
+    font-size: 12.5px;
+    font-family: inherit;
+  }
+  .water-pallet-row .wp-raw-label { font-size: 11px; color: var(--text-dim); }
   .wp-remove-btn { font-size: 12.5px; padding: 6px 10px; }
   .water-pallet-tally { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
 
@@ -416,7 +427,7 @@
     <div class="water-pallet-panel">
       <h3>Water Pallets Received Tonight (Juice)</h3>
       <div class="water-pallet-hint">
-        Water comes on whole pallets, not through the truck's case count — and some nights Juice's total above ends up with water folded in by mistake. Tap a type as it comes off the truck to subtract its cases back out of Juice's count, with a confirmation first. Set each type's cases-per-pallet once below; it's remembered from then on.
+        Water comes on whole pallets, not through the truck's case count — and some nights Juice's total above ends up with water folded in by mistake. Two ways to subtract it back out, with a confirmation first either way: tap a type as it comes off the truck on the floor (uses the cases-per-pallet number, set once and remembered), or type the exact case count straight in if you're working from the office instead.
       </div>
       <div id="waterPalletList" class="water-pallet-list"></div>
       <div id="waterPalletTally" class="water-pallet-tally"></div>
@@ -777,17 +788,28 @@ function saveWaterPalletTypes(types) {
 }
 
 let waterPalletTypes = loadWaterPalletTypes();
-let waterPalletsTallied = { count: 0, cases: 0 }; // this-session readout only — the
-// actual subtracted total already lives in the Juice case-count field itself,
-// which persists normally through the same save points every other case
-// count does; this is just a visible receipt of what happened tonight.
+let waterPalletsTallied = { pallets: 0, rawEntries: 0, cases: 0 }; // this-session
+// readout only — the actual subtracted total already lives in the Juice
+// case-count field itself, which persists normally through the same save
+// points every other case count does; this is just a visible receipt of
+// what happened tonight.
 
 function renderWaterPalletTally() {
   const el = document.getElementById("waterPalletTally");
   if (!el) return;
-  el.textContent = waterPalletsTallied.count
-    ? `Removed tonight: ${waterPalletsTallied.count} pallet(s), ${waterPalletsTallied.cases} case(s) subtracted from Juice.`
-    : "";
+  if (!waterPalletsTallied.cases) { el.textContent = ""; return; }
+  const parts = [];
+  if (waterPalletsTallied.pallets) parts.push(`${waterPalletsTallied.pallets} pallet(s)`);
+  if (waterPalletsTallied.rawEntries) parts.push(`${waterPalletsTallied.rawEntries} raw entr${waterPalletsTallied.rawEntries === 1 ? "y" : "ies"}`);
+  el.textContent = `Removed tonight: ${parts.join(" + ")}, ${waterPalletsTallied.cases} case(s) subtracted from Juice.`;
+}
+
+function subtractFromJuice(cases) {
+  const input = document.getElementById("cc_I");
+  if (!input) return null;
+  const current = Math.max(0, parseInt(input.value, 10) || 0);
+  const next = Math.max(0, current - cases);
+  return { input, current, next };
 }
 
 function removeWaterPallet(palletId) {
@@ -797,13 +819,38 @@ function removeWaterPallet(palletId) {
     alert(`Set ${t.name}'s cases-per-pallet number first (the small field next to the button), then tap again.`);
     return;
   }
-  const input = document.getElementById("cc_I");
-  if (!input) return;
-  const current = Math.max(0, parseInt(input.value, 10) || 0);
-  const next = Math.max(0, current - t.casesPerPallet);
+  const result = subtractFromJuice(t.casesPerPallet);
+  if (!result) return;
+  const { input, current, next } = result;
   if (!confirm(`Remove 1 pallet of ${t.name} (${t.casesPerPallet} cases) from Juice's total?\n\nJuice: ${current} → ${next} cases.`)) return;
   input.value = next;
-  waterPalletsTallied.count += 1;
+  waterPalletsTallied.pallets += 1;
+  waterPalletsTallied.cases += current - next;
+  renderWaterPalletTally();
+  if (hasGenerated) saveNightState();
+}
+
+// Same idea as removeWaterPallet, but for entering an exact case count
+// directly instead of going through cases-per-pallet — the number on a
+// packing slip or invoice in the office is already the real case count, so
+// there's no reason to make that route back through a pallet conversion.
+function removeWaterRawCases(palletId) {
+  const t = waterPalletTypes.find(x => x.id === palletId);
+  if (!t) return;
+  const rawInput = document.querySelector(`.wp-raw[data-pallet-id="${palletId}"]`);
+  if (!rawInput) return;
+  const raw = Math.max(0, parseInt(rawInput.value, 10) || 0);
+  if (raw <= 0) {
+    alert(`Enter how many cases of ${t.name} came in first, then tap again.`);
+    return;
+  }
+  const result = subtractFromJuice(raw);
+  if (!result) return;
+  const { input, current, next } = result;
+  if (!confirm(`Remove ${raw} case(s) of ${t.name} from Juice's total?\n\nJuice: ${current} → ${next} cases.`)) return;
+  input.value = next;
+  rawInput.value = "";
+  waterPalletsTallied.rawEntries += 1;
   waterPalletsTallied.cases += current - next;
   renderWaterPalletTally();
   if (hasGenerated) saveNightState();
@@ -818,6 +865,9 @@ function renderWaterPalletPanel() {
       <span class="wp-cpp-label">cases/pallet</span>
       <input type="number" min="0" step="1" class="wp-cpp" data-pallet-id="${t.id}" value="${t.casesPerPallet != null ? t.casesPerPallet : ""}" placeholder="e.g. 108">
       <button type="button" class="wp-remove-btn" data-pallet-id="${t.id}">− 1 pallet</button>
+      <span class="wp-raw-label">or raw cases</span>
+      <input type="number" min="0" step="1" class="wp-raw" data-pallet-id="${t.id}" placeholder="e.g. 54">
+      <button type="button" class="wp-remove-btn" data-raw-id="${t.id}">− cases</button>
     </div>
   `).join("");
 
@@ -831,8 +881,12 @@ function renderWaterPalletPanel() {
     });
   });
 
-  list.querySelectorAll(".wp-remove-btn").forEach(btn => {
+  list.querySelectorAll(".wp-remove-btn[data-pallet-id]").forEach(btn => {
     btn.addEventListener("click", () => removeWaterPallet(btn.dataset.palletId));
+  });
+
+  list.querySelectorAll(".wp-remove-btn[data-raw-id]").forEach(btn => {
+    btn.addEventListener("click", () => removeWaterRawCases(btn.dataset.rawId));
   });
 
   renderWaterPalletTally();
