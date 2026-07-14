@@ -13,6 +13,31 @@
  * Every function here mirrors its Python counterpart in assignment_engine.py
  * one-to-one — same phases, same ordering, same flags/notes — so behavior
  * (including every regression fix from the Python test suite) carries over.
+ *
+ * ---------------------------------------------------------------------
+ * Rule precedence — when two rules below pull in different directions,
+ * this is the order that wins. Every pass in this file is written to
+ * respect the rules above it, never just the one it's directly
+ * implementing:
+ *   1. Locked pairs are never split. Hardest rule in the file — seeded
+ *      into zones before anything else runs (fillZones), and every later
+ *      pass that moves people around (backfill, rebalancing, the new-hire
+ *      safety net, the light-aisle merge) checks isLockedPair first and
+ *      refuses the move rather than break one. The one narrow exception
+ *      is Dairy/Frozen backfill when literally no other way to hit
+ *      guaranteed headcount exists — and even then only as an explicit,
+ *      flagged last resort (fixed_department_split_lock), never silent.
+ *   2. Incompatibilities are never placed together (isIncompatible)  —
+ *      equally hard, checked everywhere a group gets a new member.
+ *   3. Nobody works truly alone if it can be avoided — a "new" hire never,
+ *      a light aisle prefers merging with another light aisle into one
+ *      shared team over leaving either as a solo assignment.
+ *   4. Each zone's target hours (grocery's pre-lunch window, Juice's cap,
+ *      Dairy/Frozen's fixed duration) are the thing every fill/grow/
+ *      rebalance pass is aiming at once rules 1-3 are satisfied.
+ *   5. Preferred zones and preferred partners are honored as soft
+ *      tie-breakers wherever they don't conflict with anything above.
+ * ---------------------------------------------------------------------
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
@@ -127,6 +152,22 @@
     { id: "J", aisles: "Dairy", department: "dairy", estimationMethod: "fixed_duration", fixedHeadcount: 3 },
     { id: "K", aisles: "Frozen", department: "frozen", estimationMethod: "fixed_duration", fixedHeadcount: 2 },
   ];
+
+  // Real-world habit, not just a hours calculation: Aisle 2(3) + Aisle 8(9)
+  // (zones A + D) and Aisle 14(15) + Aisle 19 (zones G + H) are the pairs
+  // that actually get doubled up on the floor on a short-staffed night —
+  // they're light often enough, and close enough together, that a 3-person
+  // team can realistically cover both. mergeLightSoloZones (Step 2.55)
+  // reaches for one of these specific pairings first when a merge is
+  // possible, before falling back to "whichever other light zone has the
+  // least work" for anything outside these two known combos.
+  const PREFERRED_LIGHT_MERGE_PAIRS = [
+    ["A", "D"],
+    ["G", "H"],
+  ];
+  function isPreferredMergePair(zid1, zid2) {
+    return PREFERRED_LIGHT_MERGE_PAIRS.some(([x, y]) => (x === zid1 && y === zid2) || (x === zid2 && y === zid1));
+  }
 
   function makeZones(caseCounts) {
     caseCounts = caseCounts || {};
@@ -535,6 +576,126 @@
   }
 
   // ---------------------------------------------------------------------
+  // Step 2.55 — a light aisle that only got 1 person out of the baseline
+  // fill shouldn't work it alone. Rather than pulling in a spare hand from
+  // wherever (which just relocates the shortage), pair the aisle with
+  // ANOTHER light aisle and cover both with one shared 3-person team —
+  // same total headcount as "1 alone + 1 normal pair" would have used,
+  // nobody isolated. Applies to zones that were always going to need just
+  // 2 people at most (targetGroupSize <= 2, i.e. genuinely light) — PLUS
+  // the specific zones in PREFERRED_LIGHT_MERGE_PAIRS (A/D, G/H), even on
+  // a night their own case count doesn't clear that bar. Aisle 2's zone
+  // (A) carries coffee (aisle 3) and Aisle 8's zone (D) carries soup —
+  // both real, daily-truck items — so neither zone is reliably "light" by
+  // the numbers the way a pure case-count filter would judge it, but
+  // they're still the two aisles that actually get doubled up on the
+  // floor by habit, real item mix or not. A zone with no known preferred
+  // partner still needs the strict light-by-the-numbers test to trigger
+  // this pass at all — a heavy zone that happened to come up short on
+  // some other night needs an actual partner of its own (protectSoloNewHires
+  // / the plain understaffed flag), not to borrow someone else's crew.
+  // ---------------------------------------------------------------------
+  function mergeLightSoloZones(zones, assignments, workersById, settings) {
+    const lightZones = zones.filter(
+      z => z.department !== "dairy" && z.department !== "frozen" && targetGroupSize(z, settings) <= 2
+    );
+    const hasPreferredPartner = z => zones.some(other => other.id !== z.id && isPreferredMergePair(z.id, other.id));
+    // Trigger set: genuinely-light zones, plus the known real-world pair
+    // members (A, D, G, H) even when this particular night's case count
+    // keeps them out of the strict "light" bucket — see comment above.
+    const soloTriggerZones = zones.filter(
+      z => z.department !== "dairy" && z.department !== "frozen" && (targetGroupSize(z, settings) <= 2 || hasPreferredPartner(z))
+    );
+
+    function eligiblePartner(z, soloWorker) {
+      const a = assignments[z.id];
+      if (!a || a.workerIds.length !== 2 || a.flags.includes(STRUGGLE_FLAG)) return null;
+      const group = a.workerIds.map(id => workersById[id]);
+      if (group.some(m => isIncompatible(m, soloWorker))) return null;
+      return { zone: z, a };
+    }
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const soloZone = soloTriggerZones.find(z => (assignments[z.id] || {}).workerIds && assignments[z.id].workerIds.length === 1);
+      if (!soloZone) break;
+
+      const soloAssignment = assignments[soloZone.id];
+      const soloWorker = workersById[soloAssignment.workerIds[0]];
+      if (!soloWorker) break;
+
+      // The known real-world partner (PREFERRED_LIGHT_MERGE_PAIRS) doesn't
+      // have to be light itself to qualify. Aisle 8's soup/canned freight
+      // is real, daily work — but Aisle 2's crew has next to nothing of
+      // its own on a night the truck skips bread and Little Debbie's, so
+      // folding that person into 8's actual freight is still the right
+      // move whether or not 8 alone would independently clear the "light"
+      // bar. Only fall back to "some other light zone, least loaded
+      // first" when there's no known preferred partner, or it isn't
+      // usable tonight (busy elsewhere, incompatible, struggling).
+      const preferred = zones
+        .filter(z => z.department !== "dairy" && z.department !== "frozen" && z.id !== soloZone.id && isPreferredMergePair(soloZone.id, z.id))
+        .map(z => eligiblePartner(z, soloWorker))
+        .filter(Boolean);
+      const others = lightZones
+        .filter(z => z.id !== soloZone.id && !isPreferredMergePair(soloZone.id, z.id))
+        .map(z => eligiblePartner(z, soloWorker))
+        .filter(Boolean)
+        .sort((x, y) => x.a.workloadHours - y.a.workloadHours);
+      const candidates = preferred.concat(others);
+
+      if (!candidates.length) break; // nothing safe to pair with — the solo-new-hire safety net (Step 3.5) is the fallback
+
+      let merged = false;
+      for (const { zone: partnerZone, a: partnerAssignment } of candidates) {
+        const partnerWorkers = partnerAssignment.workerIds.map(id => workersById[id]);
+        const team = [soloWorker, ...partnerWorkers];
+        const teamIds = team.map(w => w.id);
+
+        const oldSoloWorkload = soloAssignment.workloadHours;
+        const oldPartnerWorkload = partnerAssignment.workloadHours;
+        const projectedSolo = workloadHoursFor(soloZone, team, settings);
+        const projectedPartner = workloadHoursFor(partnerZone, team, settings);
+
+        // Hour-cap check — the same 3 people now cover both aisles
+        // (sequentially, one shift), so it's their existing base for the
+        // night MINUS what they're about to have recomputed, PLUS both
+        // zones' new totals, same accounting stackLeftoverZones uses for
+        // doubling someone up onto a second zone.
+        const fitsSolo = soloWorker.hoursAssignedTonight - oldSoloWorkload + projectedSolo + projectedPartner <= settings.maxZoneHoursPerWorker;
+        const fitsPartners = partnerWorkers.every(
+          w => w.hoursAssignedTonight - oldPartnerWorkload + projectedSolo + projectedPartner <= settings.maxZoneHoursPerWorker
+        );
+        if (!fitsSolo || !fitsPartners) continue; // would push someone over cap — try the next candidate instead of giving up
+
+        soloAssignment.workerIds = [...teamIds];
+        partnerAssignment.workerIds = [...teamIds];
+        soloAssignment.workloadHours = projectedSolo;
+        partnerAssignment.workloadHours = projectedPartner;
+
+        const idx = soloAssignment.flags.indexOf("understaffed_below_pair");
+        if (idx >= 0) soloAssignment.flags.splice(idx, 1);
+        addFlag(soloAssignment, "merged_light_pair_team");
+        addFlag(partnerAssignment, "merged_light_pair_team");
+
+        soloWorker.hoursAssignedTonight = soloWorker.hoursAssignedTonight - oldSoloWorkload + projectedSolo + projectedPartner;
+        soloWorker.zonesAssignedTonight.push(partnerZone.id);
+        for (const w of partnerWorkers) {
+          w.hoursAssignedTonight = w.hoursAssignedTonight - oldPartnerWorkload + projectedSolo + projectedPartner;
+          w.zonesAssignedTonight.push(soloZone.id);
+        }
+
+        merged = true;
+        break;
+      }
+      if (!merged) break;
+
+      changed = true;
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Step 2.65 — split up clustered underperformers
   // ---------------------------------------------------------------------
   function anchorStrugglingZones(zones, assignments, workersById, settings) {
@@ -656,6 +817,14 @@
           zid !== heavyZid &&
           assignments[zid].workerIds.length > 2 &&
           !needsExtraHelp(zid, assignments) &&
+          // A merged light-pair team (rule 3) is deliberately the same 3
+          // people covering 2 zones together — pulling one out here only
+          // touches THIS zone's copy of the roster, not the other zone's,
+          // which would silently desync the two and overwrite that
+          // worker's zonesAssignedTonight/hoursAssignedTonight record of
+          // the merge (see mergeLightSoloZones). Rule 3 outranks rule 4's
+          // hour-balancing here, so these teams are off-limits as donors.
+          !assignments[zid].flags.includes("merged_light_pair_team") &&
           assignments[zid].workloadHours < settings.groceryTargetHours
       );
       donorIds.sort((a, b) => assignments[a].workloadHours - assignments[b].workloadHours);
@@ -697,6 +866,133 @@
         if (moved) break;
       }
       if (!moved) break;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Step 2.72 — free a hand for a genuinely heavy zone by consolidating a
+  // known light pair (rule-5 soft preference, opt-in only — this never
+  // fires just because a pairing is "usual," only when a specific zone is
+  // over target and nobody with real slack (>2 already) is available to
+  // lend). 4(5) and 6(7) commonly run heavy enough to want a 3rd; 2(3) and
+  // 8(9), or 14(15) and 19, are the pairs that get consolidated to free
+  // that 3rd body — same 3-covers-2 math as mergeLightSoloZones, just
+  // triggered by "a heavy zone could use the help" instead of "one of the
+  // pair got left solo." Every zone here starts at a completely normal,
+  // fully-staffed 2-person baseline; nobody is short-handed by this move,
+  // it's a genuine reallocation choice, which is exactly why it only runs
+  // after rebalanceOverstaffedZones already tried (and failed to find) an
+  // easier donor with slack to spare.
+  // ---------------------------------------------------------------------
+  function freeDonorFromPreferredPair(zones, assignments, workersById, settings) {
+    const zoneById = Object.fromEntries(zones.map(z => [z.id, z]));
+    const groceryIds = zones.filter(z => z.department === "grocery").map(z => z.id);
+
+    function tryPairFor(heavyZid) {
+      const heavyAssignment = assignments[heavyZid];
+      const heavyZone = zoneById[heavyZid];
+      const heavyGroup = heavyAssignment.workerIds.map(wid => workersById[wid]);
+
+      for (const [p1, p2] of PREFERRED_LIGHT_MERGE_PAIRS) {
+        if (p1 === heavyZid || p2 === heavyZid) continue;
+        const a1 = assignments[p1];
+        const a2 = assignments[p2];
+        if (!a1 || !a2) continue;
+        // Only touches a completely ordinary, already-fully-staffed pair —
+        // not a solo zone (that's mergeLightSoloZones's job), not already
+        // merged, not struggling.
+        if (a1.workerIds.length !== 2 || a2.workerIds.length !== 2) continue;
+        if (a1.flags.includes(STRUGGLE_FLAG) || a2.flags.includes(STRUGGLE_FLAG)) continue;
+        if (a1.flags.includes("merged_light_pair_team") || a2.flags.includes("merged_light_pair_team")) continue;
+
+        const zone1 = zoneById[p1];
+        const zone2 = zoneById[p2];
+        const fromP1 = a1.workerIds.map(id => workersById[id]);
+        const fromP2 = a2.workerIds.map(id => workersById[id]);
+        const four = fromP1.concat(fromP2);
+        const oldP1Workload = a1.workloadHours;
+        const oldP2Workload = a2.workloadHours;
+
+        for (const donor of four) {
+          const remainingThree = four.filter(w => w.id !== donor.id);
+          // Splitting the donor off can't create a fresh incompatibility or
+          // lock break among the three staying behind, or between the donor
+          // and the heavy zone's existing crew.
+          if (remainingThree.some((m, i) => remainingThree.slice(i + 1).some(n => isIncompatible(m, n)))) continue;
+          if (remainingThree.some(m => isLockedPair(donor, m))) continue;
+          if (heavyGroup.some(m => isIncompatible(donor, m))) continue;
+
+          const projectedP1 = workloadHoursFor(zone1, remainingThree, settings);
+          const projectedP2 = workloadHoursFor(zone2, remainingThree, settings);
+          const projectedHeavy = workloadHoursFor(heavyZone, heavyGroup.concat([donor]), settings);
+          if (projectedHeavy >= heavyAssignment.workloadHours) continue;
+          if (projectedHeavy > settings.maxZoneHoursPerWorker) continue;
+
+          const donorOldWorkload = fromP1.includes(donor) ? oldP1Workload : oldP2Workload;
+          const donorFits = donor.hoursAssignedTonight - donorOldWorkload + projectedHeavy <= settings.maxZoneHoursPerWorker;
+          if (!donorFits) continue;
+          const teamFits = remainingThree.every(w => {
+            const oldWorkload = fromP1.includes(w) ? oldP1Workload : oldP2Workload;
+            return w.hoursAssignedTonight - oldWorkload + projectedP1 + projectedP2 <= settings.maxZoneHoursPerWorker;
+          });
+          if (!teamFits) continue;
+          const heavyFits = heavyGroup.every(w => w.hoursAssignedTonight - heavyAssignment.workloadHours + projectedHeavy <= settings.maxZoneHoursPerWorker);
+          if (!heavyFits) continue;
+
+          // All clear — consolidate p1+p2 into the shared 3-person team and
+          // hand the donor to the heavy zone.
+          const teamIds = remainingThree.map(w => w.id);
+          a1.workerIds = [...teamIds];
+          a2.workerIds = [...teamIds];
+          a1.workloadHours = projectedP1;
+          a2.workloadHours = projectedP2;
+          addFlag(a1, "merged_light_pair_team");
+          addFlag(a2, "merged_light_pair_team");
+
+          for (const w of remainingThree) {
+            const oldWorkload = fromP1.includes(w) ? oldP1Workload : oldP2Workload;
+            const toZid = fromP1.includes(w) ? p2 : p1;
+            w.hoursAssignedTonight = w.hoursAssignedTonight - oldWorkload + projectedP1 + projectedP2;
+            if (!w.zonesAssignedTonight.includes(toZid)) w.zonesAssignedTonight.push(toZid);
+          }
+
+          donor.hoursAssignedTonight = donor.hoursAssignedTonight - donorOldWorkload + projectedHeavy;
+          donor.zonesAssignedTonight = [heavyZid];
+          heavyAssignment.workerIds.push(donor.id);
+          heavyAssignment.workloadHours = projectedHeavy;
+          for (const w of heavyGroup) w.hoursAssignedTonight = projectedHeavy;
+          addFlag(a1, "lent_freed_hand_to_heavy_zone");
+          addFlag(a2, "lent_freed_hand_to_heavy_zone");
+          addFlag(heavyAssignment, "received_spare_hand");
+
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // "Put 3 people in them" — each heavy zone gets AT MOST one freed hand
+    // out of this specific mechanism per run, same as Dan described (2 -> 3,
+    // not 2 -> 4). A zone that's still over target after that is a job for
+    // the normal >2-donor rebalancing (rebalanceOverstaffedZones, which
+    // already ran before this) or just genuinely needs more than one known
+    // light pair can spare — not this pass grabbing a second known pair.
+    const alreadyBoosted = new Set();
+    for (let i = 0; i < groceryIds.length; i++) {
+      const heavyCandidates = groceryIds.filter(
+        zid =>
+          !alreadyBoosted.has(zid) &&
+          assignments[zid].workerIds.length &&
+          assignments[zid].workerIds.length < settings.maxGroupSize &&
+          assignments[zid].workloadHours > settings.groceryTargetHours
+      );
+      if (!heavyCandidates.length) break;
+      let heavyZid = heavyCandidates[0];
+      for (const zid of heavyCandidates.slice(1)) {
+        if (assignments[zid].workloadHours > assignments[heavyZid].workloadHours) heavyZid = zid;
+      }
+      alreadyBoosted.add(heavyZid);
+      tryPairFor(heavyZid);
     }
   }
 
@@ -841,7 +1137,12 @@
       for (const zid of groceryIds) {
         if (zid === heavyZid) continue;
         const a = assignments[zid];
-        if (!a.workerIds.length || needsExtraHelp(zid, assignments)) continue;
+        // Same rule-3-outranks-rule-4 reasoning as rebalanceOverstaffedZones
+        // above — a merged light-pair team's whole crew getting folded into
+        // a different, heavier zone would leave its OTHER merged zone
+        // still pointing at people who no longer show that zone in their
+        // own bookkeeping.
+        if (!a.workerIds.length || needsExtraHelp(zid, assignments) || a.flags.includes("merged_light_pair_team")) continue;
         if (a.workloadHours > settings.groceryTargetHours * settings.lightLoadThreshold) continue;
         const group = a.workerIds.map(wid => workersById[wid]);
         if (a.workerIds.some(wid => heavyAssignment.workerIds.includes(wid))) continue;
@@ -1155,8 +1456,10 @@
     let pool = [...active];
     assignFixedDepartments(zones, assignments, pool, settings, rotationKey); // Step 0.5
     fillZones(zones, pool, settings, assignments, rotationKey); // Step 1 + Step 2 (+2.4)
+    mergeLightSoloZones(zones, assignments, workersById, settings); // Step 2.55
     anchorStrugglingZones(zones, assignments, workersById, settings); // Step 2.65
     rebalanceOverstaffedZones(zones, assignments, workersById, settings); // Step 2.7
+    freeDonorFromPreferredPair(zones, assignments, workersById, settings); // Step 2.72
     stackLeftoverZones(zones, assignments, workersById, settings); // Step 3.1-3.2
 
     const stillIdle = active.filter(w => !w.zonesAssignedTonight.length);
@@ -1202,6 +1505,29 @@
       if (!a.workerIds.length) {
         notes.push(`${zoneLabel(zone)} has nobody assigned tonight — not enough crew to cover it without pushing someone over the hour cap.`);
       }
+    }
+
+    // A light-aisle merge is worth a note too, purely for visibility — it's
+    // a deliberate, correct outcome (rule 3), not a problem, but it's
+    // exactly the kind of thing a supervisor glancing at the plan should
+    // see spelled out rather than have to notice from two zone cards
+    // sharing the same three names.
+    const mergedZoneIds = Object.entries(assignments)
+      .filter(([, a]) => a.flags.includes("merged_light_pair_team"))
+      .map(([zid]) => zid);
+    const seenMergedPairs = new Set();
+    for (const zid of mergedZoneIds) {
+      const teamIds = assignments[zid].workerIds;
+      const partnerZid = mergedZoneIds.find(
+        other => other !== zid && !seenMergedPairs.has(other) && assignments[other].workerIds.length === teamIds.length && assignments[other].workerIds.every(id => teamIds.includes(id))
+      );
+      if (!partnerZid || seenMergedPairs.has(zid)) continue;
+      seenMergedPairs.add(zid);
+      seenMergedPairs.add(partnerZid);
+      const names = teamIds.map(wid => workersById[wid].name).join(", ");
+      notes.push(
+        `${zoneLabel(zoneById[zid])} and ${zoneLabel(zoneById[partnerZid])} are both light tonight, so the same team (${names}) is covering both instead of leaving one of them with a lone worker.`
+      );
     }
 
     // A solo new hire is called out on its own, separate from the routine
@@ -1309,9 +1635,11 @@
     fillZones,
     anchorStrugglingZones,
     rebalanceOverstaffedZones,
+    freeDonorFromPreferredPair,
     stackLeftoverZones,
     reinforceWithIdleWorkers,
     rebalanceLightZones,
+    mergeLightSoloZones,
     protectSoloNewHires,
     computeShortfall,
   };

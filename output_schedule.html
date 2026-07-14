@@ -472,13 +472,15 @@ function flagLabel(flag) {
     new_hire_left_solo: "new hire left solo",
     new_hire_safety_partner: "given a safety partner",
     lent_new_hire_safety_partner: "lent a safety partner",
+    merged_light_pair_team: "shared team with another light aisle",
+    lent_freed_hand_to_heavy_zone: "freed a hand for a heavier zone",
   };
   return labels[flag] || flag.replace(/_/g, " ");
 }
 
 function flagClass(flag) {
   if (["over_cap", "incompatibility_conflict", "fixed_department_understaffed", "understaffed_below_pair", "likely_to_struggle_multiple_underperformers", "fixed_department_split_lock", "new_hire_left_solo"].includes(flag)) return "bad";
-  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand", "new_hire_safety_partner"].includes(flag)) return "good";
+  if (["fixed_department", "anchored_with_on_pace_worker", "balanced_second_zone", "received_spare_hand", "new_hire_safety_partner", "merged_light_pair_team", "lent_freed_hand_to_heavy_zone"].includes(flag)) return "good";
   return "neutral";
 }
 
@@ -1002,8 +1004,32 @@ function moveWorkerOnSchedule(workerId, fromZone, toZone) {
   setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
 }
 
+// Multi-assign — adds a worker to an additional zone WITHOUT pulling them
+// out of the zone(s) they're already in, unlike moveWorkerOnSchedule above.
+// Same reasoning as the Assignment screen's version: the data model already
+// supports a worker sitting in more than one zone (stacked/second-aisle
+// assignments), this just adds a manual way to put them there. "Not
+// Assigned Tonight" isn't a valid target — nothing to "add" by unassigning.
+function addWorkerToScheduleZone(workerId, toZone) {
+  if (toZone === "unassigned" || !assignments[toZone]) return;
+  if (!assignments[toZone].workerIds.includes(workerId)) {
+    assignments[toZone].workerIds.push(workerId);
+    recomputeScheduleZone(toZone);
+  }
+  persist();
+  renderAll();
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
 let selectedWorkerId = null;
 let selectedFromZone = null;
+// When true, the next zone tap ADDS the selected worker to that zone
+// instead of MOVING them there. Only turned on by the long-press bubble
+// menu's "Add to another zone" action — a plain tap always starts (or
+// cancels) a normal move.
+let multiAssignMode = false;
 
 function selectWorkerForMove(workerId, fromZone) {
   if (selectedWorkerId === workerId) {
@@ -1014,6 +1040,17 @@ function selectWorkerForMove(workerId, fromZone) {
     selectedWorkerId = workerId;
     selectedFromZone = fromZone;
   }
+  multiAssignMode = false;
+  updateSelectionUI();
+}
+
+// Entry point for multi-assign, wired to the bubble menu's "Add to another
+// zone" button — always (re)starts a fresh multi-assign selection, unlike
+// selectWorkerForMove's toggle behavior.
+function beginMultiAssign(workerId, fromZone) {
+  selectedWorkerId = workerId;
+  selectedFromZone = fromZone;
+  multiAssignMode = true;
   updateSelectionUI();
 }
 
@@ -1021,9 +1058,15 @@ function handleZoneTapTarget(toZone) {
   if (!selectedWorkerId) return;
   const workerId = selectedWorkerId;
   const fromZone = selectedFromZone;
+  const wasMultiAssign = multiAssignMode;
   selectedWorkerId = null;
   selectedFromZone = null;
-  moveWorkerOnSchedule(workerId, fromZone, toZone); // re-renders, which clears the (already-null) selection UI too
+  multiAssignMode = false;
+  if (wasMultiAssign) {
+    addWorkerToScheduleZone(workerId, toZone); // re-renders, which clears the (already-null) selection UI too
+  } else {
+    moveWorkerOnSchedule(workerId, fromZone, toZone); // re-renders, which clears the (already-null) selection UI too
+  }
 }
 
 function updateSelectionUI() {
@@ -1040,7 +1083,9 @@ function updateSelectionUI() {
     if (active) {
       const worker = rosterById[selectedWorkerId];
       hint.style.display = "block";
-      hint.textContent = `Moving ${worker ? worker.name : "worker"} — tap a zone (or "Not Assigned Tonight") to place them there, or tap them again to cancel.`;
+      hint.textContent = multiAssignMode
+        ? `Adding ${worker ? worker.name : "worker"} to another zone — tap a zone to assign them there too (their current zone stays as-is), or tap them again to cancel.`
+        : `Moving ${worker ? worker.name : "worker"} — tap a zone (or "Not Assigned Tonight") to place them there, or tap them again to cancel.`;
     } else {
       hint.style.display = "none";
     }
@@ -1139,6 +1184,7 @@ function showBubbleMenu(workerId, fromZone, x, y) {
   menu.innerHTML = `
     <div class="bm-title">${worker.name}</div>
     <button type="button" data-action="edit">Edit</button>
+    <button type="button" data-action="multi-assign">Add to another zone</button>
     <button type="button" data-action="remove" ${canRemove ? "" : "disabled"}>${canRemove ? "Remove — unassign for tonight" : "Already unassigned"}</button>
     <button type="button" class="bm-delete" data-action="delete">Delete from roster</button>
   `;
@@ -1153,6 +1199,10 @@ function showBubbleMenu(workerId, fromZone, x, y) {
   menu.querySelector('[data-action="edit"]').addEventListener("click", () => {
     closeBubbleMenu();
     location.href = "worker_roster.html?edit=" + encodeURIComponent(workerId);
+  });
+  menu.querySelector('[data-action="multi-assign"]').addEventListener("click", () => {
+    closeBubbleMenu();
+    beginMultiAssign(workerId, fromZone);
   });
   if (canRemove) {
     menu.querySelector('[data-action="remove"]').addEventListener("click", () => {
