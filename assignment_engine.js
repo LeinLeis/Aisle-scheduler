@@ -19,14 +19,21 @@
  * this is the order that wins. Every pass in this file is written to
  * respect the rules above it, never just the one it's directly
  * implementing:
- *   1. Locked pairs are never split. Hardest rule in the file — seeded
- *      into zones before anything else runs (fillZones), and every later
- *      pass that moves people around (backfill, rebalancing, the new-hire
- *      safety net, the light-aisle merge) checks isLockedPair first and
- *      refuses the move rather than break one. The one narrow exception
- *      is Dairy/Frozen backfill when literally no other way to hit
- *      guaranteed headcount exists — and even then only as an explicit,
- *      flagged last resort (fixed_department_split_lock), never silent.
+ *   1. Locked pairs are never split, and never bought at grocery's expense
+ *      either. Hardest rule in the file — seeded into zones before
+ *      anything else runs (fillZones), and every later pass that moves
+ *      people around (backfill, rebalancing, the new-hire safety net, the
+ *      light-aisle merge) checks isLockedPair first and refuses the move
+ *      rather than break one. Dairy (3) and Frozen (2) are real
+ *      commitments, not soft targets — every body they take beyond what
+ *      they actually need is a body grocery didn't get, and grocery is
+ *      the side that's chronically short. So if a locked pair can't fit
+ *      together within a fixed department's actual open seats, neither
+ *      department is forced to take them (as a broken half OR as
+ *      overstaffing) — they're left for fillZones instead, where they'll
+ *      most likely land together in grocery, and the fixed department
+ *      just runs a seat short for the night (fixed_department_understaffed,
+ *      never silent).
  *   2. Incompatibilities are never placed together (isIncompatible)  —
  *      equally hard, checked everywhere a group gets a new member.
  *   3. Nobody works truly alone if it can be avoided — a "new" hire never,
@@ -131,6 +138,15 @@
       lockedWith: w.lockedWith || [],
       fixedDepartment: w.fixedDepartment || null,
       departmentRotationPool: w.departmentRotationPool || null,
+      // Zones this worker is never placed in, full stop — a harder rule
+      // than a preference, checked everywhere a worker gets a NEW zone
+      // added to their night (fillZones, backfill, every rebalance/merge
+      // pass). fixedDepartment/departmentRotationPool are trusted as
+      // deliberate individual opt-ins and aren't re-checked against this
+      // list — if both are set on the same worker that's a roster data
+      // contradiction to fix at the source, not something the algorithm
+      // second-guesses.
+      excludedZones: w.excludedZones || [],
       hoursAssignedTonight: 0,
       zonesAssignedTonight: [],
     };
@@ -267,14 +283,26 @@
     return a.lockedWith.includes(b.id) || b.lockedWith.includes(a.id);
   }
 
+  // Hard "never assign here" — checked everywhere a worker is about to
+  // pick up a NEW zone for the night. Doesn't apply to a zone they're
+  // already assigned to via fixedDepartment/departmentRotationPool (a
+  // deliberate individual opt-in, trusted as-is) or one they're already
+  // working (nothing here ever removes someone from a zone).
+  function isExcludedZone(worker, zoneId) {
+    return worker.excludedZones.includes(zoneId);
+  }
+
   function incompatibilityNote(a, b) {
     if (a.incompatibilityNotes && a.incompatibilityNotes[b.id]) return a.incompatibilityNotes[b.id];
     if (b.incompatibilityNotes && b.incompatibilityNotes[a.id]) return b.incompatibilityNotes[a.id];
     return null;
   }
 
-  function filterCompatible(candidates, group) {
-    return candidates.filter(c => !group.some(w => isIncompatible(c, w)));
+  // zoneId is optional — pass it wherever the candidates are being
+  // considered for one specific zone, so isExcludedZone gets checked
+  // alongside isIncompatible in a single pass.
+  function filterCompatible(candidates, group, zoneId) {
+    return candidates.filter(c => !group.some(w => isIncompatible(c, w)) && (zoneId === undefined || !isExcludedZone(c, zoneId)));
   }
 
   function ratingMismatchPenalty(candidate, group) {
@@ -345,6 +373,7 @@
 
     function seedLockedPairInto(a, b, zid) {
       if (!(zid in remaining) || remaining[zid] < 2) return false;
+      if (isExcludedZone(a, zid) || isExcludedZone(b, zid)) return false;
       const group = groupFor(zid);
       if (isIncompatible(a, b)) return false;
       if (group.some(m => isIncompatible(a, m) || isIncompatible(b, m))) return false;
@@ -404,7 +433,11 @@
       const group = groupFor(zone.id);
       while (remaining[zone.id] >= 2) {
         const candidates = mutualPairsAvailable().filter(
-          ([a, b]) => !isIncompatible(a, b) && !group.some(m => isIncompatible(a, m) || isIncompatible(b, m))
+          ([a, b]) =>
+            !isIncompatible(a, b) &&
+            !group.some(m => isIncompatible(a, m) || isIncompatible(b, m)) &&
+            !isExcludedZone(a, zone.id) &&
+            !isExcludedZone(b, zone.id)
         );
         if (!candidates.length) break;
         const [a, b] = candidates[0];
@@ -432,7 +465,7 @@
         const assignment = assignments[zid];
         const group = groupFor(zid);
         let candidates = byZone[zid].filter(c => !assignedIds.has(c.id));
-        candidates = filterCompatible(candidates, group);
+        candidates = filterCompatible(candidates, group, zid);
         candidates.sort((a, b) => compareArrays(candidateScore(a, zone, group), candidateScore(b, zone, group)));
         while (remaining[zid] > 0 && candidates.length) {
           const pick = candidates.shift();
@@ -441,7 +474,7 @@
           assignedIds.add(pick.id);
           group.push(pick);
           remaining[zid] -= 1;
-          candidates = filterCompatible(candidates, group);
+          candidates = filterCompatible(candidates, group, zid);
           candidates.sort((a, b) => compareArrays(candidateScore(a, zone, group), candidateScore(b, zone, group)));
         }
       }
@@ -482,7 +515,7 @@
         const group = groupFor(zone.id);
         if (group.length >= BASELINE_HEADCOUNT || remaining[zone.id] <= 0) continue;
         const rawLeftover = pool.filter(w => !assignedIds.has(w.id));
-        const leftover = filterCompatible(rawLeftover, group);
+        const leftover = filterCompatible(rawLeftover, group, zone.id);
         if (!leftover.length) continue;
         leftover.sort((a, b) => compareArrays(candidateScore(a, zone, group), candidateScore(b, zone, group)));
         const pick = leftover[0];
@@ -502,12 +535,26 @@
     // Grow pass — with every zone's baseline settled (or the pool
     // exhausted trying), whatever's left of the crew goes to whichever
     // zones still need more to reach their real case-driven target,
-    // heaviest need first. This is the same priority order as before; it
-    // just no longer runs BEFORE zones have their minimum coverage.
+    // heaviest need first — "heaviest" measured by each zone's actual
+    // projected overage (current workload minus ITS OWN target, using the
+    // group it has after the baseline pass above), not a department/
+    // target-size proxy. The previous comparator sorted every grocery zone
+    // ahead of Juice unconditionally (department === "grocery" ? 0 : 1)
+    // before ever looking at magnitude, then broke ties by raw target
+    // GROUP SIZE rather than current workload — so a grocery zone sitting
+    // only slightly over its ~3.4h target could out-rank Juice sitting
+    // hours past its own 5h cap for whatever idle bodies were left (a real
+    // incident: a 3.69h aisle got reinforced while Juice sat over 6h
+    // untouched). Juice's growth-target comment elsewhere in this file
+    // says it's meant to compete "same as grocery" for exactly this
+    // reason; this sort is what actually delivers that instead of just
+    // claiming it.
     // ---------------------------------------------------------------------
-    const ordered = [...competing].sort((a, b) =>
-      compareArrays([a.department === "grocery" ? 0 : 1, -targets[a.id]], [b.department === "grocery" ? 0 : 1, -targets[b.id]])
-    );
+    const ordered = [...competing].sort((a, b) => {
+      const overageA = workloadHoursFor(a, groupFor(a.id), settings) - targetHoursFor(a, settings);
+      const overageB = workloadHoursFor(b, groupFor(b.id), settings) - targetHoursFor(b, settings);
+      return overageB - overageA;
+    });
 
     for (const zone of ordered) {
       const assignment = assignments[zone.id];
@@ -515,7 +562,7 @@
       let blockedByIncompatibility = false;
       while (remaining[zone.id] > 0) {
         const rawLeftover = pool.filter(w => !assignedIds.has(w.id));
-        let leftover = filterCompatible(rawLeftover, group);
+        let leftover = filterCompatible(rawLeftover, group, zone.id);
         if (!leftover.length) {
           if (rawLeftover.length) blockedByIncompatibility = true;
           break;
@@ -562,7 +609,7 @@
     if (zone.estimationMethod === "fixed_duration") return;
     const target = targetHoursFor(zone, settings);
     while (assignment.workloadHours > target && group.length < settings.maxGroupSize) {
-      const candidates = filterCompatible(pool, group);
+      const candidates = filterCompatible(pool, group, zone.id);
       if (!candidates.length) break;
       candidates.sort((a, b) => compareArrays(candidateScore(a, zone, group), candidateScore(b, zone, group)));
       const pick = candidates[0];
@@ -610,6 +657,7 @@
     function eligiblePartner(z, soloWorker) {
       const a = assignments[z.id];
       if (!a || a.workerIds.length !== 2 || a.flags.includes(STRUGGLE_FLAG)) return null;
+      if (isExcludedZone(soloWorker, z.id)) return null;
       const group = a.workerIds.map(id => workersById[id]);
       if (group.some(m => isIncompatible(m, soloWorker))) return null;
       return { zone: z, a };
@@ -650,6 +698,10 @@
       let merged = false;
       for (const { zone: partnerZone, a: partnerAssignment } of candidates) {
         const partnerWorkers = partnerAssignment.workerIds.map(id => workersById[id]);
+        // The merge is bidirectional — partnerWorkers pick up soloZone
+        // just as much as soloWorker picks up partnerZone (eligiblePartner
+        // already checked soloWorker's side).
+        if (partnerWorkers.some(w => isExcludedZone(w, soloZone.id))) continue;
         const team = [soloWorker, ...partnerWorkers];
         const teamIds = team.map(w => w.id);
 
@@ -715,11 +767,13 @@
         if (donorGroup.length < 2 || !donorGroup.every(w => w.productionRating === "on_pace")) continue;
         for (const donorPick of donorGroup) {
           if (targetGroup.some(m => isIncompatible(donorPick, m))) continue;
+          if (isExcludedZone(donorPick, targetZid)) continue;
           const remainingDonor = donorGroup.filter(m => m.id !== donorPick.id);
           if (remainingDonor.some(m => isLockedPair(donorPick, m))) continue;
           for (const strugglerPick of targetGroup) {
             if (strugglerPick.productionRating === "on_pace") continue;
             if (remainingDonor.some(m => isIncompatible(strugglerPick, m))) continue;
+            if (isExcludedZone(strugglerPick, donorZid)) continue;
             const remainingTarget = targetGroup.filter(m => m.id !== strugglerPick.id);
             if (remainingTarget.some(m => isLockedPair(strugglerPick, m))) continue;
             const bondCost =
@@ -841,6 +895,7 @@
         );
         for (const candidate of movable) {
           if (heavyGroup.some(m => isIncompatible(candidate, m))) continue;
+          if (isExcludedZone(candidate, heavyZid)) continue;
           const remainingDonor = donorGroup.filter(m => m.id !== candidate.id);
           if (remainingDonor.some(m => isLockedPair(candidate, m))) continue;
           const projectedHeavy = workloadHoursFor(heavyZone, heavyGroup.concat([candidate]), settings);
@@ -921,6 +976,12 @@
           if (remainingThree.some((m, i) => remainingThree.slice(i + 1).some(n => isIncompatible(m, n)))) continue;
           if (remainingThree.some(m => isLockedPair(donor, m))) continue;
           if (heavyGroup.some(m => isIncompatible(donor, m))) continue;
+          // Each of the three staying behind is about to pick up whichever
+          // of p1/p2 they weren't already on — can't do that if they've
+          // flagged it Won't Work. Same for the donor picking up the heavy
+          // zone.
+          if (remainingThree.some(w => isExcludedZone(w, fromP1.includes(w) ? p2 : p1))) continue;
+          if (isExcludedZone(donor, heavyZid)) continue;
 
           const projectedP1 = workloadHoursFor(zone1, remainingThree, settings);
           const projectedP2 = workloadHoursFor(zone2, remainingThree, settings);
@@ -1019,6 +1080,7 @@
         const involvesJuice = zone.department === "juice" || donorZone.department === "juice";
         const cap = involvesJuice ? settings.juiceMaxTotalHours : settings.maxZoneHoursPerWorker;
         const group = a.workerIds.map(wid => workersById[wid]);
+        if (group.some(w => isExcludedZone(w, zone.id))) return false;
         const newHours = workloadHoursFor(zone, group, settings);
         return group.every(w => w.hoursAssignedTonight + newHours <= cap);
       });
@@ -1077,7 +1139,7 @@
       const zone = zoneById[zid];
       const group = assignment.workerIds.map(wid => workersById[wid]);
       if (assignment.workerIds.length >= settings.maxGroupSize) break;
-      const candidates = filterCompatible(idlePool, group);
+      const candidates = filterCompatible(idlePool, group, zid);
       if (!candidates.length) break;
       candidates.sort((a, b) => compareArrays([ratingMismatchPenalty(a, group), a.hoursAssignedTonight], [ratingMismatchPenalty(b, group), b.hoursAssignedTonight]));
       const pick = candidates[0];
@@ -1148,6 +1210,7 @@
         if (a.workerIds.some(wid => heavyAssignment.workerIds.includes(wid))) continue;
         if (heavyAssignment.workerIds.length + group.length > settings.maxGroupSize) continue;
         if (group.some(w => heavyGroup.some(hw => isIncompatible(w, hw)))) continue;
+        if (group.some(w => isExcludedZone(w, heavyZid))) continue;
         const projected = workloadHoursFor(heavyZone, heavyGroup.concat(group), settings);
         if (group.some(w => w.hoursAssignedTonight + projected > settings.maxZoneHoursPerWorker)) continue;
         lightOptions.push([zid, a, group]);
@@ -1208,7 +1271,7 @@
 
       // First choice: someone who isn't working anywhere yet tonight —
       // costs nothing else, unstaffs nothing.
-      let partner = idlePool.find(w => !isIncompatible(w, solo)) || null;
+      let partner = idlePool.find(w => !isIncompatible(w, solo) && !isExcludedZone(w, zone.id)) || null;
       let donorZid = null;
 
       if (!partner) {
@@ -1228,6 +1291,7 @@
           const group = da.workerIds.map(id => workersById[id]);
           for (const cand of group) {
             if (isIncompatible(cand, solo)) continue;
+            if (isExcludedZone(cand, zone.id)) continue;
             const remaining = group.filter(m => m.id !== cand.id);
             if (remaining.some(m => isLockedPair(cand, m))) continue;
             donorCandidates.push({ zid: dz.id, worker: cand, load: da.workloadHours });
@@ -1343,7 +1407,6 @@
       let group = dedicated.concat(chosenRotation);
 
       let backfilled = false;
-      let lockBroken = false;
       if (group.length < target) {
         const alreadyIn = new Set(group.map(w => w.id));
         const idToWorker = Object.fromEntries(pool.map(w => [w.id, w]));
@@ -1364,8 +1427,13 @@
         // break, since the pair could stay together instead. Those
         // candidates sort behind everyone else so the backfill reaches for
         // an unattached worker first. Compatibility (incompatibleWith) is
-        // filtered out entirely, same hard rule fillZones uses everywhere.
-        const rawBackfillPool = pool.filter(w => !alreadyIn.has(w.id) && !w.fixedDepartment && !w.departmentRotationPool);
+        // filtered out entirely, same hard rule fillZones uses everywhere —
+        // and so is anyone who has this zone in Won't Work (excludedZones),
+        // same as Dairy/Frozen's guaranteed headcount never overrides a
+        // hard incompatibility.
+        const rawBackfillPool = pool.filter(
+          w => !alreadyIn.has(w.id) && !w.fixedDepartment && !w.departmentRotationPool && !isExcludedZone(w, zone.id)
+        );
         const availableIds = new Set(rawBackfillPool.map(w => w.id));
         function wouldSplitLock(w) {
           return w.lockedWith.some(id => availableIds.has(id));
@@ -1389,11 +1457,19 @@
             slotsLeft -= 1;
             continue;
           }
-          // Every remaining candidate here would split a lock. Try to
-          // bring the whole pair in together instead of breaking it up —
-          // dairy/frozen need bodies anyway, so two locked partners
-          // filling two seats is strictly better than one seat plus a
-          // broken lock.
+          // Every remaining candidate here would split a lock. Bring the
+          // whole pair in together if this zone genuinely has 2 real open
+          // seats for them — never as a lone half, and never by running
+          // Dairy or Frozen over its guaranteed headcount to make room.
+          // That headcount isn't a soft target: every body Dairy/Frozen
+          // takes beyond what they actually need is a body grocery didn't
+          // get, and grocery is the side that's chronically short. If
+          // there isn't a clean 2-seat fit here, this candidate is
+          // skipped entirely (not picked alone, not split) — the seat
+          // stays open (flagged fixed_department_understaffed below) and
+          // the pair falls through to fillZones together, where they'll
+          // most likely land in grocery as a unit — exactly where the
+          // help is actually needed.
           const partnerId = candidate.lockedWith.find(id => availableIds.has(id) && !pickedIds.has(id));
           const partner = partnerId ? idToWorker[partnerId] : null;
           const partnerOk = partner && !isIncompatible(candidate, partner) && !group.some(m => isIncompatible(partner, m));
@@ -1402,15 +1478,9 @@
             pickedIds.add(candidate.id);
             pickedIds.add(partner.id);
             slotsLeft -= 2;
-          } else {
-            // Last resort: no room (or no compatible way) to keep the
-            // pair together, so the lock has to give. computeLiveConflicts
-            // on the Assignment screen flags this so it's never silent.
-            picked.push(candidate);
-            pickedIds.add(candidate.id);
-            slotsLeft -= 1;
-            lockBroken = true;
           }
+          // else: skip — leave this candidate (and their partner) for
+          // fillZones rather than seating one alone or overstaffing.
         }
 
         if (picked.length) {
@@ -1425,7 +1495,6 @@
       assignment.workerIds = group.map(w => w.id);
       addFlag(assignment, "fixed_department");
       if (backfilled) addFlag(assignment, "fixed_department_backfill");
-      if (lockBroken) addFlag(assignment, "fixed_department_split_lock");
       if (group.length < target) addFlag(assignment, "fixed_department_understaffed");
       assignment.workloadHours = workloadHoursFor(zone, group, settings);
 
@@ -1484,11 +1553,6 @@
       } else if (a.flags.includes("fixed_department_backfill")) {
         const names = a.workerIds.map(wid => workersById[wid].name).join(", ");
         notes.push(`${zoneLabel(zone)} needed help from the general pool tonight to hit its usual headcount: ${names}.`);
-      }
-      if (a.flags.includes("fixed_department_split_lock")) {
-        notes.push(
-          `${zoneLabel(zone)}'s backfill had to split a Locked With pair to fill its headcount tonight — every other way to cover it was tried first. Check the Assignment screen's conflict notice for who.`
-        );
       }
     }
 
@@ -1579,7 +1643,11 @@
     const suggestions = [];
     for (const worker of unassigned) {
       let eligible = Object.entries(workingGroups).filter(
-        ([zid, group]) => zoneById[zid].estimationMethod !== "fixed_duration" && group.length < settings.maxGroupSize && !group.some(w => isIncompatible(worker, w))
+        ([zid, group]) =>
+          zoneById[zid].estimationMethod !== "fixed_duration" &&
+          group.length < settings.maxGroupSize &&
+          !group.some(w => isIncompatible(worker, w)) &&
+          !isExcludedZone(worker, zid)
       );
       if (!eligible.length) continue;
       eligible.sort((p1, p2) =>
@@ -1627,6 +1695,7 @@
     effectiveCapacity,
     isIncompatible,
     isLockedPair,
+    isExcludedZone,
     incompatibilityNote,
     assignNight,
     suggestRedistribution,
