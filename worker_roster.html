@@ -134,9 +134,9 @@
      row to open it. Purely a reference view built from the same
      per-zone-tagged samples the overall badge already aggregates; doesn't
      feed the scheduling algorithm. */
-  .perf-zone-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .perf-zone-table th { text-align: left; color: var(--text-dim); font-weight: 600; font-size: 11px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-  .perf-zone-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  .perf-zone-table { width: auto; border-collapse: collapse; font-size: 12px; }
+  .perf-zone-table th { text-align: left; color: var(--text-dim); font-weight: 600; font-size: 11px; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .perf-zone-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .perf-zone-table tr:last-child td { border-bottom: none; }
   .perf-overall-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
   .pill {
@@ -271,6 +271,7 @@
 
   <h1>Worker Roster</h1>
   <div class="subtitle">Aisle Freight Scheduler — manage names, preferences, ratings, incompatibilities, and fixed-department assignments. Saved locally in this browser; use Export to keep a portable backup.</div>
+  <div class="subtitle" id="rosterCountLine" style="margin-top:-4px;"></div>
 
   <div class="nav-row">
     <a class="navlink active" href="worker_roster.html">Worker Roster</a>
@@ -615,7 +616,7 @@ function openPerfDetailModal(workerId) {
         const cls = fast ? "perf-fast" : slow ? "perf-slow" : "";
         return `
           <tr>
-            <td>${z.zoneLabel}</td>
+            <td>${z.zoneLabel}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>
             <td>${z.sampleCount}</td>
             <td><span class="perf-badge ${cls}" style="cursor:default;">${Math.round(z.pct)}%</span></td>
           </tr>
@@ -664,35 +665,48 @@ function sampleRoster() {
   }, extra);
 
   return [
-    w("andrew-scott", "Andrew Scott", { preferredZones: ["E", "F"], excludedZones: ["K", "J"] }),
-    w("alyx-williams", "Alyx Williams", { preferredZones: ["B", "C", "J"], departmentRotationPool: "dairy" }),
-    w("aviva-mcaffee", "Aviva McAffee", { preferredZones: ["C"], lockedWith: ["terah-biller"], excludedZones: ["J", "K"] }),
+    w("andrew-scott", "Andrew J Scott", { preferredZones: ["E", "F"], excludedZones: ["K", "J"] }),
+    w("alyx-williams", "Alyxandria K Williams", { preferredZones: ["B", "C", "J"], departmentRotationPool: "dairy" }),
+    w("aviva-mcaffee", "Aviva C McAfee", { preferredZones: ["C"], lockedWith: ["terah-biller"], excludedZones: ["J", "K"] }),
     w("bradley-perry", "Bradley Perry", { preferredZones: ["K"], fixedDepartment: "frozen" }),
     w("james-jones", "James Jones", { preferredZones: ["K"], fixedDepartment: "frozen" }),
-    w("evan-rosenburg", "Evan Rosenburg", { preferredZones: ["J", "I", "G"], departmentRotationPool: "dairy" }),
+    w("evan-rosenburg", "Evan M Rosenburger", { preferredZones: ["J", "I", "G"], departmentRotationPool: "dairy" }),
     w("joe-toris", "Joe Toris", { preferredZones: ["I", "H", "G"], departmentRotationPool: "frozen" }),
-    w("ethan-humbert", "Ethan Humbert", { fixedDepartment: "dairy" }),
-    w("cleo-phelps", "Cleo Phelps", { preferredZones: ["B", "C", "J"], departmentRotationPool: "dairy" }),
-    w("terah-biller", "Terah Biller", { preferredZones: ["C"], lockedWith: ["aviva-mcaffee"], excludedZones: ["J", "K"] }),
+    w("ethan-humbert", "Ethan A Humbert", { fixedDepartment: "dairy" }),
+    w("cleo-phelps", "Cleo C Phelps", { preferredZones: ["B", "C", "J"], departmentRotationPool: "dairy" }),
+    w("terah-biller", "Terah L Biller", { preferredZones: ["C"], lockedWith: ["aviva-mcaffee"], excludedZones: ["J", "K"] }),
     w("gabe-bigler", "Gabe Bigler", { preferredZones: ["J"], departmentRotationPool: "dairy" }),
-    w("andy", "Andy", { productionRating: "new", preferredZones: ["G", "H", "I"] }),
-    w("damen", "Damen", { productionRating: "new", preferredZones: ["G", "H", "I"], preferredPartners: ["andy"] }),
-    w("huddy", "Huddy", { productionRating: "needs_improvement", preferredZones: ["G", "H", "I"], preferredPartners: ["andy", "damen"] }),
-    w("chris-b", "Chris B", { productionRating: "needs_improvement", preferredZones: ["G", "H", "I"] }),
-    w("mickey-baker", "Mickey Baker", { productionRating: "needs_improvement", preferredZones: ["I", "H", "G"] }),
-    w("zach", "Zach", { preferredZones: ["I", "H", "G"] }),
-    w("ken-biller", "Ken Biller", { preferredZones: ["G", "H", "D"] }),
-    w("hunnter-spencer", "Hunnter Spencer", { productionRating: "needs_improvement", preferredZones: ["I", "G", "H"], departmentRotationPool: "dairy" }),
-    w("chase-spencer", "Chase Spencer", { productionRating: "needs_improvement", preferredZones: ["I", "G", "H"] }),
-    w("lydia-plough", "Lydia Plough", { preferredZones: ["A", "F"] }),
+    w("andy", "Andy S Dorsey", { productionRating: "new", preferredZones: ["G", "H", "I"], excludedZones: ["J", "K"] }),
+    w("damen", "Damen J Dorsey", { productionRating: "new", preferredZones: ["G", "H", "I"], preferredPartners: ["andy"], excludedZones: ["J", "K"] }),
+    w("huddy", "Mychael T Gamble", { productionRating: "new", preferredZones: ["G", "H", "I"], preferredPartners: ["andy", "damen"] }),
+    w("chris-b", "Chris S Bennett", { productionRating: "needs_improvement", preferredZones: ["G", "H", "I"], departmentRotationPool: "dairy" }),
+    w("mickey-baker", "Mickey J Baker", { productionRating: "needs_improvement", preferredZones: ["I", "H", "G"], excludedZones: ["J", "K"] }),
+    w("zach", "Zachery L Clabaugh", { preferredZones: ["I", "H", "G"], preferredPartners: ["mickey-baker"], excludedZones: ["J", "K"] }),
+    w("ken-biller", "Kenneth L Biller", { preferredZones: ["G", "H", "D"], excludedZones: ["J", "K"] }),
+    w("hunnter-spencer", "Hunnter J Spencer", { productionRating: "needs_improvement", preferredZones: ["I", "G", "H"], departmentRotationPool: "dairy" }),
+    w("chase-spencer", "Chase E Spencer", { productionRating: "needs_improvement", preferredZones: ["I", "G", "H"], departmentRotationPool: "dairy" }),
+    w("lydia-plough", "Lydia L Plough", { preferredZones: ["A", "F"], excludedZones: ["J", "K"] }),
     w("lydia-flores", "Lydia Flores", { preferredZones: ["D", "F"], departmentRotationPool: "dairy" }),
-    w("regina-staples", "Regina Staples", { productionRating: "needs_improvement", preferredZones: ["D", "E", "B"], preferredPartners: ["lydia-flores"] }),
-    w("dennis-fletcher", "Dennis Fletcher", { productionRating: "needs_improvement", preferredZones: ["A", "D", "G"], departmentRotationPool: "dairy" }),
-    w("abigail-rich", "Abigail Rich", { productionRating: "needs_improvement", preferredZones: ["D", "E", "F"], incompatibleWith: ["dennis-fletcher"] }),
-    w("vicki-good", "Vicki Good", { preferredZones: ["E", "B"] }),
-    w("ashleigh-taylor", "Ashleigh Taylor", { preferredZones: ["E", "B", "C"], preferredPartners: ["vicki-good"] }),
-    w("karen-kroetz", "Karen Kroetz", { productionRating: "needs_improvement", preferredZones: ["A", "D", "F"] }),
-    w("jason", "Jason", { productionRating: "new", preferredZones: ["I", "G", "H"] }),
+    w("regina-staples", "Regina M Staples", { productionRating: "needs_improvement", preferredZones: ["D", "E", "B"], preferredPartners: ["lydia-flores"], excludedZones: ["J", "K"] }),
+    w("dennis-fletcher", "Dennis J Fletcher", { productionRating: "needs_improvement", preferredZones: ["A", "D", "G"], departmentRotationPool: "dairy" }),
+    w("abigail-rich", "Abigail R Rich", { productionRating: "needs_improvement", preferredZones: ["D", "E", "F"], incompatibleWith: ["dennis-fletcher"], excludedZones: ["J", "K"] }),
+    w("vicki-good", "Vicki S Good", { preferredZones: ["E", "B"], excludedZones: ["J", "K"] }),
+    w("ashleigh-taylor", "Ashleigh M Taylor", { preferredZones: ["E", "B", "C"], preferredPartners: ["vicki-good"], excludedZones: ["J", "K"] }),
+    w("karen-kroetz", "Karen L Kroetz", { productionRating: "needs_improvement", preferredZones: ["A", "D", "F"], excludedZones: ["J", "K"] }),
+    w("jason", "Jason Clark", { productionRating: "new", preferredZones: ["I", "G", "H"], excludedZones: ["J", "K"] }),
+    w("brandy-moreno", "Brandy Moreno", { preferredZones: ["B", "C", "D"], excludedZones: ["J", "K"] }),
+    w("erica-blair", "Erica T Blair", { preferredZones: ["B", "C", "D"], preferredPartners: ["brandy-moreno"], excludedZones: ["J", "K"] }),
+    w("kristina-hagan", "Kristina A Hagan", { preferredZones: ["C", "D", "F"], preferredPartners: ["aviva-mcaffee", "terah-biller", "ken-biller"], excludedZones: ["J", "K"] }),
+    w("joel-urbina", "Joel T Urbina", { productionRating: "new", preferredZones: ["D", "G", "H"], excludedZones: ["J", "K"] }),
+    w("matt-barnett", "Matthew L Barnett", { preferredZones: ["E", "F", "G"], excludedZones: ["J", "K"] }),
+    w("crystal-adkins", "Crystal D Adkins", { preferredZones: ["B", "E", "F"], excludedZones: ["J", "K"] }),
+    w("michelle-nagy", "Michelle R Nagy", { productionRating: "new", preferredZones: ["E", "F", "C"], excludedZones: ["J", "K"] }),
+    w("miranda-sherman", "Miranda Sherman", { productionRating: "needs_improvement", preferredZones: ["D", "E", "B"], excludedZones: ["J", "K"] }),
+    w("nathan-albert", "Nathan E Albert", { productionRating: "needs_improvement", preferredZones: ["F", "I", "B"], excludedZones: ["J", "K"] }),
+    w("samantha-adams", "Samantha Adams", { productionRating: "new", excludedZones: ["J", "K"] }),
+    w("savanah-dayringer", "Savanah Dayringer", { productionRating: "needs_improvement", preferredZones: ["B", "F", "A"], excludedZones: ["J", "K"] }),
+    w("jeremy-aldrich", "Jeremy Aldrich", { productionRating: "new", excludedZones: ["J", "K"] }),
+    w("tyler-penrod", "Tyler G Penrod", { productionRating: "new", excludedZones: ["J", "K"] }),
   ];
 }
 
@@ -765,6 +779,13 @@ function renderTable() {
   const empty = document.getElementById("emptyState");
   body.innerHTML = "";
   empty.style.display = roster.length ? "none" : "block";
+
+  const countLine = document.getElementById("rosterCountLine");
+  const activeCount = roster.filter(w => w.active).length;
+  const inactiveCount = roster.length - activeCount;
+  countLine.textContent = roster.length
+    ? `${roster.length} worker${roster.length === 1 ? "" : "s"} on the roster — ${activeCount} active${inactiveCount ? `, ${inactiveCount} inactive` : ""}`
+    : "";
 
   for (const worker of sortedByName(roster)) {
     const tr = document.createElement("tr");
@@ -1801,88 +1822,4 @@ roster = loadRoster();
 renderTable();
 
 // Long-pressing a worker bubble on Review & Correct or Output Schedule and
-// picking "Edit" lands here with ?edit=<id> — jump straight into that
-// worker's edit modal instead of making them find the row themselves.
-(function openEditFromQueryParam() {
-  const id = new URLSearchParams(location.search).get("edit");
-  if (id && workerById(id)) openModal(id);
-})();
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
-  });
-}
-</script>
-
-<script>
-// ---------------------------------------------------------------------
-// Swipe left/right between screens — Roster < Assignment > Schedule.
-// Touch-only (mouse-based drag-and-drop on desktop never fires touch
-// events, so this doesn't interfere there). Ignored when the gesture
-// starts on anything interactive so it doesn't fight with buttons,
-// inputs, links, worker chips, or the long-press bubble menu.
-// ---------------------------------------------------------------------
-(function () {
-  const PAGES = [
-    { file: "worker_roster.html", label: "Roster" },
-    { file: "review_correct.html", label: "Assignment" },
-    { file: "output_schedule.html", label: "Schedule" },
-  ];
-  const here = location.pathname.split("/").pop() || "worker_roster.html";
-  const idx = PAGES.findIndex(p => p.file === here);
-  if (idx === -1) return;
-
-  function injectDots() {
-    const wrap = document.createElement("div");
-    wrap.className = "swipe-dots no-print";
-    wrap.innerHTML = PAGES.map((p, i) => `<span class="swipe-dot${i === idx ? " active" : ""}"></span>`).join("");
-    document.body.appendChild(wrap);
-    const style = document.createElement("style");
-    style.textContent = `
-      .swipe-dots { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 7px; z-index: 400; pointer-events: none; }
-      .swipe-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
-      .swipe-dot.active { background: var(--accent); }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function goTo(newIdx) {
-    if (newIdx < 0 || newIdx >= PAGES.length) return;
-    location.href = PAGES[newIdx].file;
-  }
-
-  // .table-wrap is included because the roster table scrolls horizontally
-  // on its own (overflow-x: auto) when it's wider than the screen — without
-  // this, a sideways drag meant to scroll the table gets read as a page
-  // swipe instead, since a table scroll and a page swipe are both
-  // horizontal gestures.
-  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .worker-tag, .bubble-menu, .overlay, .modal, .table-wrap";
-  const SWIPE_THRESHOLD = 70;
-  let startX = null, startY = null, startedOnInteractive = false;
-
-  document.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 1) return;
-    const t = e.touches[0];
-    startX = t.clientX;
-    startY = t.clientY;
-    startedOnInteractive = !!e.target.closest(INTERACTIVE_SELECTOR);
-  }, { passive: true });
-
-  document.addEventListener("touchend", (e) => {
-    if (startX === null || startedOnInteractive) { startX = null; return; }
-    const t = e.changedTouches[0];
-    const dx = t.clientX - startX;
-    const dy = t.clientY - startY;
-    startX = null;
-    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    if (dx < 0) goTo(idx + 1); // swipe left -> next page
-    else goTo(idx - 1);        // swipe right -> previous page
-  }, { passive: true });
-
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDots);
-  else injectDots();
-})();
-</script>
-</body>
-</html>
+// picking "Edi
