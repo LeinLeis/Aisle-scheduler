@@ -289,6 +289,7 @@
     border: 1px solid var(--border);
     color: var(--text-dim);
     margin: 2px 4px 0 0;
+    cursor: pointer;
   }
   .flag-tag.bad { border-color: var(--red); color: #ffb4ae; }
   .flag-tag.good { border-color: var(--green); color: #9fe6ac; }
@@ -686,6 +687,18 @@ document.getElementById("btnLoadSample").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 // Case count inputs
 // ---------------------------------------------------------------------------
+// Dairy/Frozen's guaranteed headcount (3/2) is untouched by any of this —
+// see the comment on workloadHoursFor's fixed_duration branch in
+// assignment_engine.js. This is purely the case count that now drives
+// THEIR hours estimate too, so their performance rating gets compared
+// against a number that reflects tonight's actual volume instead of an
+// always-4-hours guess. Defaults are pre-filled (not just a placeholder,
+// unlike grocery/juice below) at whatever case count works out to exactly
+// 4h at their guaranteed headcount — 4h × 60min × 1 case/min × headcount —
+// so a night nobody touches these still behaves like the old flat-4h
+// system, and it's obvious at a glance what to bump up or down from.
+const DEPT_DEFAULT_CASE_COUNTS = { J: 720, K: 480 };
+
 function buildCaseCountGrid() {
   const grid = document.getElementById("caseCountGrid");
   grid.innerHTML = "";
@@ -704,12 +717,21 @@ function buildCaseCountGrid() {
     `;
     grid.appendChild(field);
   });
+  AE.ZONE_DEFS.filter(z => z.department === "dairy" || z.department === "frozen").forEach(z => {
+    const field = document.createElement("div");
+    field.className = "setup-field";
+    field.innerHTML = `
+      <label>${AE.zoneLabel(z)} (defaults to a typical night — adjust if tonight's truck was heavier or lighter)</label>
+      <input type="number" min="0" step="1" id="cc_${z.id}" value="${DEPT_DEFAULT_CASE_COUNTS[z.id]}">
+    `;
+    grid.appendChild(field);
+  });
 }
 
 function readCaseCounts() {
   const counts = {};
   const missing = [];
-  AE.ZONE_DEFS.filter(z => z.department === "grocery" || z.department === "juice").forEach(z => {
+  AE.ZONE_DEFS.filter(z => z.department === "grocery" || z.department === "juice" || z.department === "dairy" || z.department === "frozen").forEach(z => {
     const el = document.getElementById(`cc_${z.id}`);
     if (el.value.trim() === "") missing.push(AE.zoneLabel(z));
     counts[z.id] = Math.max(0, parseInt(el.value, 10) || 0);
@@ -1486,7 +1508,114 @@ function flagClass(flag) {
   return "neutral";
 }
 
+// One-line plain-English explanation for each flag, shown on tap so the
+// short tag label doesn't have to double as the full explanation. Bad-class
+// entries specifically describe a live, re-checked condition (see
+// recomputeLiveFlags below) rather than "what the algorithm did," so the
+// wording should read as a current fact, not a past action.
+function flagExplanation(flag) {
+  const text = {
+    fixed_department: "This zone is a fixed department (Dairy/Frozen) — it's covered every night, not part of the general grocery rotation.",
+    fixed_department_backfill: "This department didn't have enough dedicated/rotation-pool people on their own tonight, so the general pool backfilled the rest of the seats.",
+    fixed_department_understaffed: `Below its guaranteed headcount right now (Dairy needs 3, Frozen needs 2). Add someone to clear this.`,
+    understaffed_below_pair: "Fewer than 2 people in this zone right now — nobody should work an aisle alone. Add another person to clear this.",
+    incompatibility_conflict: "Two people in this zone are marked Incompatible With each other on the Worker Roster. Move one of them out, or update the roster if that's no longer true.",
+    preference_override: "At least one person here was placed against their stated zone preference — there wasn't a better option when the algorithm built this board.",
+    reinforced: "The algorithm added an extra person here after the initial pass because this zone's workload still ran heavy.",
+    likely_to_struggle_multiple_underperformers: "2 or more people in this zone are rated below On Pace (Needs Improvement or New) — the estimate assumes this crew runs slower than a full-strength one. Swapping in an On Pace worker clears this.",
+    anchored_with_on_pace_worker: "An On Pace worker was swapped in here specifically to anchor a zone that had zero On Pace people.",
+    lent_on_pace_anchor: "This zone lent one of its On Pace workers to anchor another struggling zone.",
+    lent_spare_hand: "This zone had slack to spare, so a worker was pulled from here to help a heavier zone.",
+    received_spare_hand: "This zone received an extra worker pulled from a lighter zone to help handle its workload.",
+    stacked_sequential: "This zone shares its crew with another zone worked earlier/later in the same shift, rather than getting a fully separate crew.",
+    stacked_sequential_donor: "This zone's crew is also covering another zone sequentially (see \"stacked sequentially\" on that other zone).",
+    balanced_second_zone: "This zone received a light aisle's crew on top of its own to even out the workload between them.",
+    lent_to_heavier_zone: "This was a lighter zone, so its crew was paired onto a heavier zone instead of standing alone.",
+    over_cap: `Someone assigned here is projected over the ${settings.maxZoneHoursPerWorker}h per-worker cap for tonight, counting every zone they're in. Move them to lighten their night, or split their workload — clears once nobody's over.`,
+    redistributed: "This worker was moved here automatically from the unassigned list based on the redistribution suggestion.",
+    fixed_department_split_lock: "A locked pair had to be split to fill this department's guaranteed headcount — there wasn't a clean 2-seat fit for both of them here.",
+    new_hire_left_solo: "A New-rated worker is alone in this zone with nobody available anywhere to partner them — new hires shouldn't work solo. Clears once they have a partner.",
+    new_hire_safety_partner: "A partner was added specifically so a New-rated worker wasn't left working alone.",
+    lent_new_hire_safety_partner: "This zone lent a worker to go partner a New-rated worker who would've otherwise been alone.",
+    merged_light_pair_team: "This zone shares its 3-person team with another light aisle — together they cover both, rather than running two separate understaffed crews.",
+    lent_freed_hand_to_heavy_zone: "Consolidating this zone with its light-aisle partner freed up a hand, who was sent to help a heavier zone.",
+  };
+  return text[flag] || flagLabel(flag);
+}
+
+// ---------------------------------------------------------------------------
+// Bad-condition flags need to reflect the CURRENT board, not just whatever
+// was true the moment the algorithm first built it. Without this, an "over
+// cap" (or any other red flag) set by the initial generation stays stuck
+// forever even after manually rebalancing actually fixes it — and a manual
+// edit that CREATES a new problem (dragging a second underperformer into an
+// already-struggling zone, say) would silently show nothing wrong either.
+// Recomputes every re-derivable bad flag from scratch on every board render,
+// using the same definitions assignment_engine.js used to set them
+// originally:
+//   - over_cap: computeShortfall's per-worker check against
+//     settings.maxZoneHoursPerWorker, just fed each worker's live total
+//     across every zone they're in tonight (workerTotalHoursTonight) instead
+//     of the engine's internal hoursAssignedTonight bookkeeping, which this
+//     screen doesn't maintain after manual moves.
+//   - incompatibility_conflict: same pairwise AE.isIncompatible check
+//     computeLiveConflicts already uses for the banner, just applied
+//     per-zone so it can drive a tag too.
+//   - understaffed_below_pair / fixed_department_understaffed: fillZones'
+//     "< 2 people" floor for regular zones, AE.targetGroupSize's headcount
+//     for Dairy/Frozen.
+//   - likely_to_struggle_multiple_underperformers: fillZones' "2+ non-On
+//     Pace workers" check.
+//   - new_hire_left_solo: protectSoloNewHires' "alone + New rating" check.
+// Flags that describe HOW the algorithm built the board (reinforced,
+// anchored_with_on_pace_worker, merged_light_pair_team, etc.) are
+// deliberately left alone here — those are a record of what the algorithm
+// did, not a live condition of the current groups, and recomputing them
+// would mean re-running its whole decision process instead of just
+// rechecking a fact about who's standing where right now.
+// ---------------------------------------------------------------------------
+const LIVE_BAD_FLAGS = ["over_cap", "incompatibility_conflict", "understaffed_below_pair", "fixed_department_understaffed", AE.STRUGGLE_FLAG, "new_hire_left_solo"];
+
+function addLiveFlag(a, flag) {
+  if (!a.flags.includes(flag)) a.flags.push(flag);
+}
+
+function recomputeLiveFlags() {
+  for (const [zid, a] of Object.entries(assignments)) {
+    LIVE_BAD_FLAGS.forEach(flag => {
+      const idx = a.flags.indexOf(flag);
+      if (idx >= 0) a.flags.splice(idx, 1);
+    });
+
+    const zone = zoneById[zid];
+    const group = a.workerIds.map(id => rosterById[id]).filter(Boolean);
+    if (!zone || !group.length) continue;
+
+    if (group.some(w => workerTotalHoursTonight(w.id) - settings.maxZoneHoursPerWorker > 0.001)) {
+      addLiveFlag(a, "over_cap");
+    }
+
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        if (AE.isIncompatible(group[i], group[j])) addLiveFlag(a, "incompatibility_conflict");
+      }
+    }
+
+    const isFixedDept = zone.department === "dairy" || zone.department === "frozen";
+    if (isFixedDept) {
+      if (group.length < AE.targetGroupSize(zone, settings)) addLiveFlag(a, "fixed_department_understaffed");
+    } else if (group.length < 2) {
+      addLiveFlag(a, "understaffed_below_pair");
+    }
+
+    if (group.filter(w => w.productionRating !== "on_pace").length >= 2) addLiveFlag(a, AE.STRUGGLE_FLAG);
+
+    if (group.length === 1 && group[0].productionRating === "new") addLiveFlag(a, "new_hire_left_solo");
+  }
+}
+
 function renderBoard() {
+  recomputeLiveFlags();
   const board = document.getElementById("board");
   board.innerHTML = "";
   for (const zone of zones) {
@@ -1509,7 +1638,7 @@ function renderBoard() {
     });
     const chips = sortedWorkerIds.map(wid => rosterById[wid] ? chipHtml(rosterById[wid], zone.id) : "").join("");
     const flagsHtml = a.flags.length
-      ? `<div class="flags">${a.flags.map(f => `<span class="flag-tag ${flagClass(f)}">${flagLabel(f)}</span>`).join("")}</div>`
+      ? `<div class="flags">${a.flags.map(f => `<span class="flag-tag ${flagClass(f)}" data-flag="${f}">${flagLabel(f)}</span>`).join("")}</div>`
       : "";
 
     const hasActual = a.actualHours != null;
@@ -1557,6 +1686,7 @@ function renderBoard() {
   wireDragAndDrop();
   updateSelectionUI();
   wireActualTimeInputs();
+  wireFlagTags();
 }
 
 function wireActualTimeInputs() {
@@ -1569,6 +1699,16 @@ function wireActualTimeInputs() {
     });
     // don't lose focus/keystrokes on every render — only update the
     // in-memory value on blur/enter (the "change" event above), not "input"
+  });
+}
+
+// Tags are terse by design (fits on a chip), so the actual explanation is
+// one tap away instead of crammed into the label itself.
+function wireFlagTags() {
+  document.querySelectorAll(".flag-tag[data-flag]").forEach(tag => {
+    tag.addEventListener("click", () => {
+      alert(`${flagLabel(tag.dataset.flag)} — ${flagExplanation(tag.dataset.flag)}`);
+    });
   });
 }
 

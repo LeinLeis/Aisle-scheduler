@@ -218,6 +218,27 @@
 
   function workloadHoursFor(zone, workers, settings) {
     if (zone.estimationMethod === "fixed_duration") {
+      // Case-driven now, same math as every other zone (cases ÷ rate ÷ 60,
+      // divided by the crew's effective capacity), instead of always using
+      // a flat settings.dairyFixedDurationHours/frozenFixedDurationHours
+      // constant no matter how much actually came in on the truck. That
+      // flat number meant a genuinely heavy or light Dairy/Frozen night
+      // could swing someone's on_pace/needs_improvement rating up or down
+      // (see markZoneDone's threshold nudge) for reasons that had nothing
+      // to do with how they actually worked — a fair comparison needs a
+      // baseline that reflects tonight's real volume. Falls back to the
+      // flat constant only when no case count has been entered yet
+      // (caseCount === 0), so this doesn't show a scary "0.00h" before
+      // tonight's counts are in. Deliberately still gated on
+      // estimationMethod === "fixed_duration" rather than switched to
+      // "case_rate" — that string is what keeps Dairy/Frozen's guaranteed
+      // 3/2 headcount (targetGroupSize, assignFixedDepartments) working
+      // exactly as before; only the HOURS math changed, not who gets
+      // assigned there or how many.
+      if (zone.caseCount > 0) {
+        const cap = workers.length ? effectiveCapacity(workers, settings) : 1.0;
+        return zoneTotalHours(zone, settings) / cap;
+      }
       if (zone.department === "dairy") return settings.dairyFixedDurationHours;
       if (zone.department === "frozen") return settings.frozenFixedDurationHours;
     }

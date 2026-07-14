@@ -282,11 +282,17 @@
   <div class="toolbar">
     <button class="primary" id="btnAdd">+ Add Worker</button>
     <button id="btnPhotoImport">📷 Import from Photo</button>
-    <button id="btnExport">Export JSON</button>
-    <button id="btnImport">Import JSON</button>
+    <button id="btnExport" title="Roster only — names, preferences, ratings. For sharing/reviewing a roster snapshot.">Export JSON</button>
+    <button id="btnImport" title="Roster only — replaces the current roster with this file's.">Import JSON</button>
     <input type="file" id="fileImport" accept="application/json">
     <button id="btnReset">Reset to Sample Roster</button>
     <button class="danger" id="btnClearRoster">Clear Roster</button>
+  </div>
+
+  <div class="toolbar" style="margin-top:-6px;">
+    <button id="btnBackupAll" title="Everything saved in this browser — roster, performance history, tonight's crew, and any in-progress or finalized schedule. Use this to protect against losing a phone or clearing browser data.">💾 Back Up Everything</button>
+    <button id="btnRestoreAll" class="danger" title="Restores from a Back Up Everything file — overwrites everything currently saved in this browser.">♻️ Restore Everything</button>
+    <input type="file" id="fileRestoreAll" accept="application/json">
   </div>
 
   <div id="warnings"></div>
@@ -1439,6 +1445,73 @@ function importRoster(file) {
 }
 
 // ---------------------------------------------------------------------------
+// Full backup / restore — everything the app keeps in this browser's
+// localStorage, not just the roster. Export JSON/Import JSON above are
+// roster-only (handy for sharing or reviewing just the roster); this is the
+// "don't lose a phone and lose everything" safety net, covering performance
+// history, tonight's crew, and any in-progress or finalized schedule too.
+// Redeploying the app itself never touches localStorage — this is purely
+// for surviving a cleared browser, a lost/replaced phone, or moving to a
+// second device — but none of that data has ever had ANY backup path until
+// now, so this is worth using periodically regardless.
+// ---------------------------------------------------------------------------
+const ALL_STORAGE_KEYS = [
+  "aisleScheduler_workerRoster_v1",
+  "aisleScheduler_currentNight_v1",
+  "aisleScheduler_finalizedSchedule_v1",
+  "aisleScheduler_workerPerformanceHistory_v1",
+  "aisleScheduler_tonightCrew_v1",
+  "aisleScheduler_waterPalletTypes_v1",
+];
+
+function backupEverything() {
+  const data = {};
+  ALL_STORAGE_KEYS.forEach(key => {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return;
+    try { data[key] = JSON.parse(raw); } catch (e) { data[key] = raw; }
+  });
+  const payload = { type: "aisle-scheduler-full-backup", version: 1, exportedAt: new Date().toISOString(), data };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `aisle-scheduler-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function restoreEverything(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const payload = JSON.parse(reader.result);
+      // Tolerate either the wrapped {type, data} shape this exports, or a
+      // raw {key: value} dump, so a hand-edited or older-shaped file still
+      // works rather than being rejected outright.
+      const data = payload && typeof payload === "object" && payload.data ? payload.data : payload;
+      if (!data || typeof data !== "object") throw new Error("not a backup object");
+      const foundKeys = ALL_STORAGE_KEYS.filter(k => data[k] !== undefined);
+      if (!foundKeys.length) throw new Error("no recognizable data in this file");
+
+      const names = foundKeys.map(k => k.replace("aisleScheduler_", "").replace("_v1", "")).join(", ");
+      if (!confirm(`Restore from this backup (${foundKeys.length} data set(s): ${names})? This overwrites everything currently saved in this browser and can't be undone. The page will reload afterward.`)) return;
+
+      foundKeys.forEach(key => localStorage.setItem(key, JSON.stringify(data[key])));
+      // Every screen reads its localStorage keys fresh on load — a full
+      // reload is the simplest way to guarantee every bit of in-memory
+      // state (this page's roster, plus whatever review_correct.html /
+      // output_schedule.html have cached) actually reflects the restore,
+      // rather than trying to hot-patch several screens' worth of state.
+      location.reload();
+    } catch (e) {
+      alert("Couldn't read that file as an Aisle Scheduler backup.");
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ---------------------------------------------------------------------------
 // Photo import (OCR) — reads a photo of a roster sheet client-side via
 // Tesseract.js and turns it into a checklist of candidate names. Nothing
 // leaves the device; the OCR library itself is the only thing pulled from
@@ -1773,6 +1846,12 @@ document.getElementById("perfOverlay").addEventListener("click", (e) => { if (e.
 
 document.getElementById("btnExport").addEventListener("click", exportRoster);
 document.getElementById("btnImport").addEventListener("click", () => document.getElementById("fileImport").click());
+document.getElementById("btnBackupAll").addEventListener("click", backupEverything);
+document.getElementById("btnRestoreAll").addEventListener("click", () => document.getElementById("fileRestoreAll").click());
+document.getElementById("fileRestoreAll").addEventListener("change", (e) => {
+  if (e.target.files[0]) restoreEverything(e.target.files[0]);
+  e.target.value = "";
+});
 document.getElementById("fileImport").addEventListener("change", (e) => {
   if (e.target.files[0]) importRoster(e.target.files[0]);
   e.target.value = "";

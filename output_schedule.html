@@ -223,6 +223,7 @@
     border: 1px solid var(--border);
     color: var(--text-dim);
     margin: 2px 4px 0 0;
+    cursor: pointer;
   }
   .flag-tag.bad { border-color: var(--red); color: #ffb4ae; }
   .flag-tag.good { border-color: var(--green); color: #9fe6ac; }
@@ -484,6 +485,98 @@ function flagClass(flag) {
   return "neutral";
 }
 
+// See flagExplanation in review_correct.html for the full rationale — same
+// tags, same meanings, kept in sync here since this screen renders the same
+// flag set on the finalized/in-progress schedule.
+function flagExplanation(flag) {
+  const text = {
+    fixed_department: "This zone is a fixed department (Dairy/Frozen) — it's covered every night, not part of the general grocery rotation.",
+    fixed_department_backfill: "This department didn't have enough dedicated/rotation-pool people on their own tonight, so the general pool backfilled the rest of the seats.",
+    fixed_department_understaffed: "Below its guaranteed headcount right now (Dairy needs 3, Frozen needs 2). Add someone to clear this.",
+    understaffed_below_pair: "Fewer than 2 people in this zone right now — nobody should work an aisle alone. Add another person to clear this.",
+    incompatibility_conflict: "Two people in this zone are marked Incompatible With each other on the Worker Roster. Move one of them out, or update the roster if that's no longer true.",
+    preference_override: "At least one person here was placed against their stated zone preference — there wasn't a better option when the algorithm built this board.",
+    reinforced: "The algorithm added an extra person here after the initial pass because this zone's workload still ran heavy.",
+    likely_to_struggle_multiple_underperformers: "2 or more people in this zone are rated below On Pace (Needs Improvement or New) — the estimate assumes this crew runs slower than a full-strength one. Swapping in an On Pace worker clears this.",
+    anchored_with_on_pace_worker: "An On Pace worker was swapped in here specifically to anchor a zone that had zero On Pace people.",
+    lent_on_pace_anchor: "This zone lent one of its On Pace workers to anchor another struggling zone.",
+    lent_spare_hand: "This zone had slack to spare, so a worker was pulled from here to help a heavier zone.",
+    received_spare_hand: "This zone received an extra worker pulled from a lighter zone to help handle its workload.",
+    stacked_sequential: "This zone shares its crew with another zone worked earlier/later in the same shift, rather than getting a fully separate crew.",
+    stacked_sequential_donor: "This zone's crew is also covering another zone sequentially (see \"stacked sequentially\" on that other zone).",
+    balanced_second_zone: "This zone received a light aisle's crew on top of its own to even out the workload between them.",
+    lent_to_heavier_zone: "This was a lighter zone, so its crew was paired onto a heavier zone instead of standing alone.",
+    over_cap: `Someone assigned here is projected over the ${settings.maxZoneHoursPerWorker}h per-worker cap for tonight, counting every zone they're in. Move them to lighten their night, or split their workload — clears once nobody's over.`,
+    redistributed: "This worker was moved here automatically from the unassigned list based on the redistribution suggestion.",
+    fixed_department_split_lock: "A locked pair had to be split to fill this department's guaranteed headcount — there wasn't a clean 2-seat fit for both of them here.",
+    new_hire_left_solo: "A New-rated worker is alone in this zone with nobody available anywhere to partner them — new hires shouldn't work solo. Clears once they have a partner.",
+    new_hire_safety_partner: "A partner was added specifically so a New-rated worker wasn't left working alone.",
+    lent_new_hire_safety_partner: "This zone lent a worker to go partner a New-rated worker who would've otherwise been alone.",
+    merged_light_pair_team: "This zone shares its 3-person team with another light aisle — together they cover both, rather than running two separate understaffed crews.",
+    lent_freed_hand_to_heavy_zone: "Consolidating this zone with its light-aisle partner freed up a hand, who was sent to help a heavier zone.",
+  };
+  return text[flag] || flagLabel(flag);
+}
+
+function wireFlagTags() {
+  document.querySelectorAll(".flag-tag[data-flag]").forEach(tag => {
+    tag.addEventListener("click", () => {
+      alert(`${flagLabel(tag.dataset.flag)} — ${flagExplanation(tag.dataset.flag)}`);
+    });
+  });
+}
+
+function workerTotalHoursTonight(workerId) {
+  return zonesContaining(workerId).reduce((sum, zid) => sum + (assignments[zid] ? assignments[zid].workloadHours : 0), 0);
+}
+
+// Same live-recompute as review_correct.html's recomputeLiveFlags — see the
+// comment there for the full rationale. Kept in sync here because this
+// screen also supports tap-to-move, so a red flag set when the schedule was
+// finalized can just as easily go stale (or a new one appear) after
+// shuffling people around here during the shift.
+const LIVE_BAD_FLAGS = ["over_cap", "incompatibility_conflict", "understaffed_below_pair", "fixed_department_understaffed", AE.STRUGGLE_FLAG, "new_hire_left_solo"];
+
+function addLiveFlag(a, flag) {
+  if (!a.flags) a.flags = [];
+  if (!a.flags.includes(flag)) a.flags.push(flag);
+}
+
+function recomputeLiveFlags() {
+  for (const [zid, a] of Object.entries(assignments)) {
+    if (!a.flags) a.flags = [];
+    LIVE_BAD_FLAGS.forEach(flag => {
+      const idx = a.flags.indexOf(flag);
+      if (idx >= 0) a.flags.splice(idx, 1);
+    });
+
+    const zone = zoneById[zid];
+    const group = (a.workerIds || []).map(id => rosterById[id]).filter(Boolean);
+    if (!zone || !group.length) continue;
+
+    if (group.some(w => workerTotalHoursTonight(w.id) - settings.maxZoneHoursPerWorker > 0.001)) {
+      addLiveFlag(a, "over_cap");
+    }
+
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        if (AE.isIncompatible(group[i], group[j])) addLiveFlag(a, "incompatibility_conflict");
+      }
+    }
+
+    const isFixedDept = zone.department === "dairy" || zone.department === "frozen";
+    if (isFixedDept) {
+      if (group.length < AE.targetGroupSize(zone, settings)) addLiveFlag(a, "fixed_department_understaffed");
+    } else if (group.length < 2) {
+      addLiveFlag(a, "understaffed_below_pair");
+    }
+
+    if (group.filter(w => w.productionRating !== "on_pace").length >= 2) addLiveFlag(a, AE.STRUGGLE_FLAG);
+
+    if (group.length === 1 && group[0].productionRating === "new") addLiveFlag(a, "new_hire_left_solo");
+  }
+}
+
 function renderMeta() {
   const el = document.getElementById("metaText");
   const totalAssigned = new Set(Object.values(assignments).flatMap(a => a.workerIds)).size;
@@ -503,21 +596,33 @@ function renderConflicts() {
 
 function renderTimeSummary() {
   const el = document.getElementById("timeSummaryBanner");
-  const logged = Object.values(assignments).filter(a => a.actualHours != null && a.workerIds.length);
-  if (!logged.length) {
+  const loggedEntries = Object.entries(assignments).filter(([, a]) => a.actualHours != null && a.workerIds.length);
+  if (!loggedEntries.length) {
     el.style.display = "none";
     return;
   }
-  const totalAdjusted = logged.reduce((s, a) => s + a.workloadHours, 0);
-  const totalActual = logged.reduce((s, a) => s + a.actualHours, 0);
+  // Flat baseline alongside Adjusted/Actual, same three numbers the
+  // per-zone cards below already show — this banner was only ever
+  // totaling two of the three. Dairy/Frozen are fixed-duration and never
+  // had a flat number to begin with (flatHoursFor returns null for them,
+  // same as their card showing "Fixed" instead of a Flat/Adjusted split),
+  // so they're excluded from the flat total rather than counted as 0.
+  const totalFlat = loggedEntries.reduce((s, [zid, a]) => {
+    const zone = zoneById[zid];
+    const flat = a.flatHours != null ? a.flatHours : flatHoursFor(zone, a.workerIds.length);
+    return s + (flat || 0);
+  }, 0);
+  const totalAdjusted = loggedEntries.reduce((s, [, a]) => s + a.workloadHours, 0);
+  const totalActual = loggedEntries.reduce((s, [, a]) => s + a.actualHours, 0);
   const delta = totalActual - totalAdjusted;
   const sign = delta > 0 ? "+" : "";
   const verdict = delta > 0.05 ? "running behind the estimate" : delta < -0.05 ? "finishing ahead of the estimate" : "tracking the estimate closely";
   el.style.display = "block";
-  el.innerHTML = `<strong>Adjusted vs actual (${logged.length} zone(s) logged so far):</strong> ${totalAdjusted.toFixed(2)}h adjusted estimate vs ${totalActual.toFixed(2)}h reported — ${sign}${delta.toFixed(2)}h, ${verdict}.`;
+  el.innerHTML = `<strong>Flat vs adjusted vs actual (${loggedEntries.length} zone(s) logged so far):</strong> ${totalFlat.toFixed(2)}h flat baseline · ${totalAdjusted.toFixed(2)}h adjusted estimate vs ${totalActual.toFixed(2)}h reported — ${sign}${delta.toFixed(2)}h, ${verdict}.`;
 }
 
 function renderZoneList() {
+  recomputeLiveFlags();
   const list = document.getElementById("zoneList");
   list.innerHTML = "";
 
@@ -540,7 +645,7 @@ function renderZoneList() {
       : '<span class="empty-hint">nobody assigned</span>';
 
     const flagsHtml = (a.flags || []).length
-      ? `<div class="flags">${a.flags.map(f => `<span class="flag-tag ${flagClass(f)}">${flagLabel(f)}</span>`).join("")}</div>`
+      ? `<div class="flags">${a.flags.map(f => `<span class="flag-tag ${flagClass(f)}" data-flag="${f}">${flagLabel(f)}</span>`).join("")}</div>`
       : "";
 
     const hasActual = a.actualHours != null;
@@ -689,12 +794,17 @@ function wireActualTimeInputs() {
       const zid = input.dataset.zoneId;
       const val = input.value.trim();
       assignments[zid].actualHours = val === "" ? null : Math.max(0, parseFloat(val) || 0);
-      recordPerformanceSample(zid, assignments[zid].actualHours);
-      persist();
-      renderAll();
-      const status = document.getElementById("statusMsg");
-      status.textContent = "Saved";
-      setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+      if (assignments[zid].actualHours != null) {
+        // Typing a real value in IS marking it done — no separate tap on
+        // the Done button needed. markZoneDone honors this value (see the
+        // a.actualHours == null check there) instead of recomputing it
+        // from the current wall-clock time, and handles the performance
+        // sample, rating nudge, persist, and re-render on its own.
+        markZoneDone(zid);
+      } else {
+        persist();
+        renderAll();
+      }
     });
   });
 }
@@ -733,6 +843,7 @@ function renderAll() {
   renderUnassigned();
   wireActualTimeInputs();
   wireZoneDoneButtons();
+  wireFlagTags();
   updateSelectionUI(); // re-apply selected/tap-target classes to the freshly-rendered elements
 }
 
@@ -824,8 +935,17 @@ function markZoneDone(zoneId) {
   if (!zone || !a || !a.workerIds || !a.workerIds.length) return;
 
   const now = new Date();
-  const b = computeShiftBreakdown(now);
-  a.actualHours = Math.round(b.netHours * 100) / 100;
+  // Honor a manually-typed Actual value instead of clobbering it — Done
+  // used to always recompute actualHours from wall-clock elapsed shift
+  // time no matter what, which silently threw away whatever hours had
+  // just been typed into the Actual box. Only fall back to computing from
+  // elapsed time when nothing's been entered yet (the "press Done the
+  // moment it actually finishes" real-time workflow this button was
+  // originally built for).
+  if (a.actualHours == null) {
+    const b = computeShiftBreakdown(now);
+    a.actualHours = Math.round(b.netHours * 100) / 100;
+  }
   a.doneAt = now.toISOString();
   recordPerformanceSample(zoneId, a.actualHours);
 
