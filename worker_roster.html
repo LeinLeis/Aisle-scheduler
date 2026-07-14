@@ -134,11 +134,24 @@
      row to open it. Purely a reference view built from the same
      per-zone-tagged samples the overall badge already aggregates; doesn't
      feed the scheduling algorithm. */
-  .perf-zone-table { width: auto; border-collapse: collapse; font-size: 12px; }
+  /* The generic `table` rule above sets min-width: 760px and
+     table-layout: fixed for the main roster table — class specificity beats
+     it for properties this rule actually declares (width), but min-width
+     and table-layout are per-property, not per-rule, so without overriding
+     them here too they kept forcing this table to a fixed 760px-wide,
+     evenly-split layout regardless of how little its actual content needs.
+     That's what was still making the popup read as "way too wide" even
+     after switching width to auto. */
+  .perf-zone-table { width: auto; min-width: 0; table-layout: auto; border-collapse: collapse; font-size: 12px; }
   .perf-zone-table th { text-align: left; color: var(--text-dim); font-weight: 600; font-size: 11px; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .perf-zone-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .perf-zone-table tr:last-child td { border-bottom: none; }
   .perf-overall-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+  /* The shared .modal class defaults to max-width: 640px for the Add/Edit
+     Worker modal's many fields — this popup's content (one summary card, a
+     narrow 3-column table) doesn't need anywhere near that, so it was
+     sitting in a box far wider than itself. */
+  #perfOverlay .modal { max-width: 360px; }
   .pill {
     display: inline-block;
     padding: 1px 6px;
@@ -1908,6 +1921,87 @@ const editParam = new URLSearchParams(location.search).get("edit");
 if (editParam && workerById(editParam)) {
   openModal(editParam);
 }
+</script>
+
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+
+<script>
+// ---------------------------------------------------------------------
+// Swipe left/right between screens — Roster < Assignment > Schedule.
+// Touch-only (mouse-based drag-and-drop on desktop never fires touch
+// events, so this doesn't interfere there). Ignored when the gesture
+// starts on anything interactive so it doesn't fight with buttons,
+// inputs, the zone-preference/partner long-press grids, or the Add/Edit
+// Worker modal.
+// ---------------------------------------------------------------------
+(function () {
+  const PAGES = [
+    { file: "worker_roster.html", label: "Roster" },
+    { file: "review_correct.html", label: "Assignment" },
+    { file: "output_schedule.html", label: "Schedule" },
+  ];
+  const here = location.pathname.split("/").pop() || "worker_roster.html";
+  const idx = PAGES.findIndex(p => p.file === here);
+  if (idx === -1) return;
+
+  function injectDots() {
+    const wrap = document.createElement("div");
+    wrap.className = "swipe-dots no-print";
+    wrap.innerHTML = PAGES.map((p, i) => `<span class="swipe-dot${i === idx ? " active" : ""}"></span>`).join("");
+    document.body.appendChild(wrap);
+    const style = document.createElement("style");
+    style.textContent = `
+      .swipe-dots { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 7px; z-index: 400; pointer-events: none; }
+      .swipe-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+      .swipe-dot.active { background: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function goTo(newIdx) {
+    if (newIdx < 0 || newIdx >= PAGES.length) return;
+    location.href = PAGES[newIdx].file;
+  }
+
+  // .table-wrap added on top of the other pages' selector — the roster
+  // table scrolls horizontally on its own (overflow-x: auto, see
+  // .table-wrap in the stylesheet) once there are more columns than fit
+  // the screen, and a horizontal drag to scroll it is otherwise
+  // indistinguishable from a swipe-to-navigate gesture. Without this, a
+  // sideways scroll on the table kept getting hijacked into a page change
+  // instead.
+  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .worker-tag, .bubble-menu, .overlay, .modal, .table-wrap";
+  const SWIPE_THRESHOLD = 70;
+  let startX = null, startY = null, startedOnInteractive = false;
+
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    startedOnInteractive = !!e.target.closest(INTERACTIVE_SELECTOR);
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (startX === null || startedOnInteractive) { startX = null; return; }
+    const t = e.changedTouches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    startX = null;
+    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) goTo(idx + 1); // swipe left -> next page
+    else goTo(idx - 1);        // swipe right -> previous page
+  }, { passive: true });
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDots);
+  else injectDots();
+})();
 </script>
 </body>
 </html>
