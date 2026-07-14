@@ -236,8 +236,10 @@
      even mid-hold and was making a working (or broken) long-press look
      identical from the outside. This ring is the ground truth: if it
      disappears before you lift your finger without having moved, the
-     touch sequence really was interrupted (touchcancel), not just faded. */
-  .chip-toggle.zone-chip.pressing { box-shadow: 0 0 0 2px var(--amber) inset; }
+     touch sequence really was interrupted (touchcancel), not just faded.
+     Not scoped to .zone-chip — reused by the merged Partners/Locked With
+     grid (partnerLockChipGrid()) too. */
+  .chip-toggle.pressing { box-shadow: 0 0 0 2px var(--amber) inset; }
   .chip-toggle.pref-1 { background: linear-gradient(135deg, var(--pref-1), var(--pref-1-dark)); border-color: var(--pref-1); color: #04210a; font-weight: 700; }
   .chip-toggle.pref-2 { background: linear-gradient(135deg, var(--pref-2), var(--pref-2-dark)); border-color: var(--pref-2); color: #03262c; font-weight: 700; }
   .chip-toggle.pref-3 { background: linear-gradient(135deg, var(--pref-3), var(--pref-3-dark)); border-color: var(--pref-3); color: #eef1ff; font-weight: 700; }
@@ -340,13 +342,8 @@
       </div>
 
       <div class="field">
-        <label>Preferred Partners <span class="muted" style="font-weight:400;">(scoring bonus — doesn't have to be mutual)</span></label>
+        <label>Partners <span class="muted" style="font-weight:400;">— tap someone to prefer working with them (a scoring bonus, doesn't have to be mutual). Long-press or right-click for <span style="color: var(--lock);">🔒 Locked With</span> instead — a hard requirement, always kept together, never split. Long-press again to clear it.</span></label>
         <div class="checkbox-grid" id="partnersGrid" style="border-color: var(--green);"></div>
-      </div>
-
-      <div class="field">
-        <label style="color: var(--lock);">🔒 Locked With <span style="font-weight:400; color: var(--lock);">(hard requirement — always kept together, never split — different from Preferred Partners above)</span></label>
-        <div class="checkbox-grid" id="lockedGrid" style="border-color: var(--lock);"></div>
         <div class="conflict-note" id="lockConflictNote" style="display:none;"></div>
       </div>
 
@@ -715,6 +712,8 @@ function renderTable() {
 // ---------------------------------------------------------------------------
 // Modal — add / edit
 // ---------------------------------------------------------------------------
+// Only used for Incompatible With now — Preferred Partners and Locked With
+// moved to the merged tap/long-press grid below (partnerLockChipGrid()).
 function chipGrid(containerId, otherWorkers, selectedIds, mode) {
   const el = document.getElementById(containerId);
   el.innerHTML = "";
@@ -724,7 +723,7 @@ function chipGrid(containerId, otherWorkers, selectedIds, mode) {
   }
   otherWorkers.forEach(w => {
     const chip = document.createElement("div");
-    chip.className = "chip-toggle" + (selectedIds.includes(w.id) ? " active " + (mode === "incompat" ? "incompat-mode" : mode === "lock" ? "lock-mode" : "") : "");
+    chip.className = "chip-toggle" + (selectedIds.includes(w.id) ? " active incompat-mode" : "");
     chip.textContent = w.name;
     chip.dataset.id = w.id;
     chip.addEventListener("click", () => {
@@ -732,10 +731,9 @@ function chipGrid(containerId, otherWorkers, selectedIds, mode) {
       if (idx >= 0) selectedIds.splice(idx, 1);
       else selectedIds.push(w.id);
       chip.classList.toggle("active");
-      chip.classList.toggle("incompat-mode", mode === "incompat" && chip.classList.contains("active"));
-      chip.classList.toggle("lock-mode", mode === "lock" && chip.classList.contains("active"));
-      if (mode === "incompat") renderIncompatNotes(selectedIds);
-      if (mode === "lock" || mode === "incompat") checkLockConflict();
+      chip.classList.toggle("incompat-mode", chip.classList.contains("active"));
+      renderIncompatNotes(selectedIds);
+      checkLockConflict();
     });
     el.appendChild(chip);
   });
@@ -982,6 +980,166 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Merged Preferred Partners / Locked With grid over other roster workers —
+// same tap-vs-long-press pattern as zonePrefChipGrid above, minus the
+// ranking (partners and locks are both plain unordered sets, not a ranked
+// 1st/2nd/3rd list). Tap ensures someone reads as a preferred partner
+// (green — a soft scoring bonus); long-press or right-click ensures they
+// read as Locked With instead (purple — a hard requirement). Either
+// gesture clears the other state first, since a worker can only be one or
+// the other, not both, at a time. Reuses the exact same event-delegation
+// and long-press-race-guarding machinery as the zone grid — see the
+// comments over there for why each piece exists (container-level
+// listeners surviving re-renders, handleLongPressTrigger racing our timer
+// against Android's native contextmenu, treating a late touchcancel as
+// confirmation instead of an abort).
+// ---------------------------------------------------------------------------
+const partnerLockGridState = {};
+
+function renderPartnerLockChips(containerId) {
+  const el = document.getElementById(containerId);
+  const state = partnerLockGridState[containerId];
+  el.innerHTML = "";
+  if (!state.otherWorkers.length) {
+    el.innerHTML = '<span class="muted" style="font-size:12px;">No other workers on the roster yet.</span>';
+    return;
+  }
+  state.otherWorkers.forEach(w => {
+    const chip = document.createElement("div");
+    const locked = state.lockedArr.includes(w.id);
+    const partner = !locked && state.partnerArr.includes(w.id);
+    chip.className = "chip-toggle" + (locked ? " active lock-mode" : partner ? " active" : "");
+    chip.title = locked
+      ? "Locked With — tap to switch to a preferred partner instead, or long-press to clear"
+      : "Tap to prefer working with them — long-press or right-click for Locked With";
+    chip.textContent = w.name;
+    chip.dataset.id = w.id;
+    el.appendChild(chip);
+  });
+}
+
+function partnerLockChipGrid(containerId, otherWorkers, partnerArr, lockedArr) {
+  const el = document.getElementById(containerId);
+  const state = partnerLockGridState[containerId] || (partnerLockGridState[containerId] = {
+    otherWorkers: null, partnerArr: null, lockedArr: null,
+    pressTimer: null, startPos: null, startTime: null, firedLongPress: false, pressingChip: null,
+  });
+  state.otherWorkers = otherWorkers;
+  state.partnerArr = partnerArr;
+  state.lockedArr = lockedArr;
+  state.pressTimer = null;
+  state.startPos = null;
+  state.startTime = null;
+  state.firedLongPress = false;
+  state.pressingChip = null;
+
+  renderPartnerLockChips(containerId);
+
+  if (el.dataset.partnerGridWired) return; // listeners already attached — never re-attach on a re-render
+  el.dataset.partnerGridWired = "1";
+
+  function togglePartner(wid) {
+    const lockIdx = state.lockedArr.indexOf(wid);
+    if (lockIdx >= 0) state.lockedArr.splice(lockIdx, 1);
+    const pIdx = state.partnerArr.indexOf(wid);
+    if (pIdx >= 0) state.partnerArr.splice(pIdx, 1);
+    else state.partnerArr.push(wid);
+    renderPartnerLockChips(containerId);
+    checkLockConflict();
+  }
+  function toggleLocked(wid) {
+    const pIdx = state.partnerArr.indexOf(wid);
+    if (pIdx >= 0) state.partnerArr.splice(pIdx, 1);
+    const lockIdx = state.lockedArr.indexOf(wid);
+    if (lockIdx >= 0) state.lockedArr.splice(lockIdx, 1);
+    else state.lockedArr.push(wid);
+    renderPartnerLockChips(containerId);
+    checkLockConflict();
+  }
+
+  function chipIdFor(e) {
+    const chip = e.target.closest(".chip-toggle");
+    return chip ? chip.dataset.id : null;
+  }
+
+  function handleLongPressTrigger(wid) {
+    if (state.firedLongPress) return;
+    state.firedLongPress = true;
+    clearTimeout(state.pressTimer);
+    state.pressTimer = null;
+    state.pressingChip = null;
+    toggleLocked(wid);
+  }
+
+  function startPress(e) {
+    if (e.type === "mousedown" && e.button !== 0) return;
+    const chip = e.target.closest(".chip-toggle");
+    if (!chip) return;
+    const point = e.touches ? e.touches[0] : e;
+    if (!point) return;
+    state.firedLongPress = false;
+    state.startPos = { x: point.clientX, y: point.clientY };
+    state.startTime = Date.now();
+    state.pressingChip = chip;
+    chip.classList.add("pressing");
+    clearTimeout(state.pressTimer);
+    state.pressTimer = setTimeout(() => {
+      handleLongPressTrigger(chip.dataset.id);
+    }, ZONE_LONG_PRESS_MS);
+  }
+  function movePress(e) {
+    if (!state.startPos) return;
+    const point = e.touches ? e.touches[0] : e;
+    if (!point) return;
+    const dx = point.clientX - state.startPos.x, dy = point.clientY - state.startPos.y;
+    if (Math.sqrt(dx * dx + dy * dy) > ZONE_LONG_PRESS_CANCEL_PX) cancelPress();
+  }
+  function cancelPress() {
+    clearTimeout(state.pressTimer);
+    state.pressTimer = null;
+    state.startPos = null;
+    state.startTime = null;
+    if (state.pressingChip) {
+      state.pressingChip.classList.remove("pressing");
+      state.pressingChip = null;
+    }
+  }
+  function handleTouchCancel() {
+    const chip = state.pressingChip;
+    const elapsed = state.startTime ? Date.now() - state.startTime : 0;
+    if (chip && elapsed >= ZONE_LONG_PRESS_MS - 100) {
+      handleLongPressTrigger(chip.dataset.id);
+    } else {
+      cancelPress();
+    }
+  }
+
+  el.addEventListener("touchstart", startPress, { passive: true });
+  el.addEventListener("touchmove", movePress, { passive: true });
+  el.addEventListener("touchend", cancelPress);
+  el.addEventListener("touchcancel", handleTouchCancel);
+  el.addEventListener("mousedown", startPress);
+  el.addEventListener("mousemove", movePress);
+  el.addEventListener("mouseup", cancelPress);
+  el.addEventListener("mouseleave", cancelPress);
+  el.addEventListener("contextmenu", e => {
+    const wid = chipIdFor(e);
+    if (!wid) return;
+    e.preventDefault();
+    handleLongPressTrigger(wid);
+  });
+  el.addEventListener("click", e => {
+    if (state.firedLongPress) {
+      state.firedLongPress = false;
+      return;
+    }
+    const wid = chipIdFor(e);
+    if (!wid) return;
+    togglePartner(wid);
+  });
+}
+
 let workingPartners = [], workingLocked = [], workingIncompat = [], workingIncompatNotes = {}, workingExcludedZones = [], workingPreferredZones = [];
 
 function renderIncompatNotes(selectedIds) {
@@ -1043,8 +1201,7 @@ function openModal(id) {
   workingExcludedZones = worker ? [...(worker.excludedZones || [])] : [];
   workingPreferredZones = worker ? [...worker.preferredZones] : [];
 
-  chipGrid("partnersGrid", others, workingPartners, "partner");
-  chipGrid("lockedGrid", others, workingLocked, "lock");
+  partnerLockChipGrid("partnersGrid", others, workingPartners, workingLocked);
   chipGrid("incompatGrid", others, workingIncompat, "incompat");
   zonePrefChipGrid("zonePrefGrid", workingPreferredZones, workingExcludedZones);
   renderIncompatNotes(workingIncompat);

@@ -4,7 +4,17 @@
 // library or its language data (loaded from a CDN by the photo-import
 // feature) — those still need a connection the first time they're used in
 // a session.
-const CACHE_NAME = "aisle-scheduler-v3";
+// Bumped v3 -> v4: worker_roster.html (no query string) is one of the
+// install-time precached CORE_ASSETS below, and the fetch handler only
+// refreshes that cache entry on a SUCCESSFUL network fetch — on a flaky
+// store connection, a failed fetch silently falls back to whatever was
+// cached at install time, with no error and no visible sign anything's
+// stale. Bumping the name forces activate() to wipe every old cache and
+// start clean, so this can't keep quietly serving a months-old build
+// through the plain nav-tab link while a query-stringed URL (like
+// worker_roster.html?edit=<id>, which was never precached and almost
+// always requires an actual network hit) shows the real, current version.
+const CACHE_NAME = "aisle-scheduler-v4";
 const CORE_ASSETS = [
   "./",
   "./index.html",
