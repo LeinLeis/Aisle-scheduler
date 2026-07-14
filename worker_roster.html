@@ -125,10 +125,20 @@
     border: 1px solid var(--border);
     color: var(--text-dim);
     flex-shrink: 0;
+    cursor: pointer;
   }
   .perf-badge.perf-fast { border-color: var(--rating-on-pace); color: var(--rating-on-pace); }
   .perf-badge.perf-slow { border-color: var(--red); color: var(--red); }
   .perf-badge.perf-pending { opacity: 0.5; }
+  /* Performance Details modal (perfOverlay) — tap the perf badge on any
+     row to open it. Purely a reference view built from the same
+     per-zone-tagged samples the overall badge already aggregates; doesn't
+     feed the scheduling algorithm. */
+  .perf-zone-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .perf-zone-table th { text-align: left; color: var(--text-dim); font-weight: 600; font-size: 11px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .perf-zone-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  .perf-zone-table tr:last-child td { border-bottom: none; }
+  .perf-overall-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
   .pill {
     display: inline-block;
     padding: 1px 6px;
@@ -384,6 +394,31 @@
     </div>
   </div>
 
+  <!-- Performance Details modal (reference-only — informs your own
+       decisions, doesn't feed the scheduling algorithm) -->
+  <div class="overlay" id="perfOverlay">
+    <div class="modal">
+      <h2 id="perfModalTitle">Performance Details</h2>
+      <div class="modal-sub" id="perfModalSub"></div>
+      <div id="perfOverallRow" style="margin-bottom:16px;"></div>
+      <table class="perf-zone-table">
+        <thead>
+          <tr>
+            <th>Zone</th>
+            <th>Nights Logged</th>
+            <th>Measured</th>
+          </tr>
+        </thead>
+        <tbody id="perfZoneBody"></tbody>
+      </table>
+      <div class="modal-actions" style="justify-content:flex-end;">
+        <div class="right">
+          <button id="btnPerfClose">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Photo import modal -->
   <div class="overlay" id="photoOverlay">
     <div class="modal">
@@ -511,6 +546,91 @@ function performancePercentFor(worker) {
   return { pct: (totalBaseline / totalActual) * 100, sampleCount: samples.length, measured: true };
 }
 
+// Same weighted-average math as performancePercentFor above, just scoped
+// to one zone's samples instead of all of them — every sample already
+// carries the zoneId it was logged against (see recordPerformanceSample in
+// output_schedule.html), so this is purely a different grouping of data
+// that's already there, not a new thing being tracked. Reference-only: it
+// doesn't feed assignment_engine.js, it's here to help you decide things
+// like zone preferences, Won't Work, or who to pair with whom.
+//
+// No MIN_SAMPLES_FOR_TREND gate here like the overall badge has — a zone
+// a worker's only touched once or twice would almost never clear that bar,
+// and hiding the number entirely would just make the details view mostly
+// empty for anyone except your most senior people. Showing the real
+// sample count next to the percentage lets you weigh confidence yourself
+// (109% on 1 night reads very differently than 109% on 8) instead of the
+// UI deciding for you.
+function performanceByZoneFor(worker) {
+  const history = loadPerformanceHistory();
+  const entry = history[worker.id];
+  const samples = entry && entry.samples ? Object.values(entry.samples) : [];
+  const byZone = {};
+  samples.forEach(s => {
+    (byZone[s.zoneId] = byZone[s.zoneId] || []).push(s);
+  });
+  return ZONES
+    .map(z => {
+      const zoneSamples = byZone[z.id];
+      if (!zoneSamples || !zoneSamples.length) return null;
+      const totalBaseline = zoneSamples.reduce((s, x) => s + x.baselinePersonMinutes, 0);
+      const totalActual = zoneSamples.reduce((s, x) => s + x.actualPersonMinutes, 0);
+      if (totalActual <= 0) return null;
+      return { zoneId: z.id, zoneLabel: z.label, pct: (totalBaseline / totalActual) * 100, sampleCount: zoneSamples.length };
+    })
+    .filter(Boolean);
+}
+
+function openPerfDetailModal(workerId) {
+  const worker = workerById(workerId);
+  if (!worker) return;
+
+  document.getElementById("perfModalTitle").textContent = `${worker.name} — Performance Details`;
+  document.getElementById("perfModalSub").textContent =
+    "Reference only — informs your own scheduling decisions, doesn't change what the algorithm assigns.";
+
+  const overall = performancePercentFor(worker);
+  const overallPctText = Math.round(overall.pct) + "%" + (overall.measured ? "" : "*");
+  const overallDesc = overall.measured
+    ? `Measured across ${overall.sampleCount} logged zone-night(s), every zone combined.`
+    : `Starting baseline for "${ratingLabel(worker.productionRating)}" — ${overall.sampleCount} of ${MIN_SAMPLES_FOR_TREND} needed zone-nights logged so far.`;
+  document.getElementById("perfOverallRow").innerHTML = `
+    <div class="perf-overall-card">
+      <span class="perf-badge${overall.measured ? (overall.pct >= 105 ? " perf-fast" : overall.pct <= 90 ? " perf-slow" : "") : " perf-pending"}" style="font-size:13px; padding:3px 10px; cursor:default;">${overallPctText}</span>
+      <div>
+        <div style="font-weight:600; font-size:13px;">Overall</div>
+        <div class="muted" style="font-size:11px;">${overallDesc}</div>
+      </div>
+    </div>
+  `;
+
+  const byZone = performanceByZoneFor(worker);
+  const body = document.getElementById("perfZoneBody");
+  if (!byZone.length) {
+    body.innerHTML = `<tr><td colspan="3" class="muted" style="text-align:center; padding:16px;">No actual-hours logged for ${worker.name} in any zone yet — this fills in as nights get worked and logged on the Assignment or Output Schedule screens.</td></tr>`;
+  } else {
+    body.innerHTML = byZone
+      .map(z => {
+        const fast = z.pct >= 105, slow = z.pct <= 90;
+        const cls = fast ? "perf-fast" : slow ? "perf-slow" : "";
+        return `
+          <tr>
+            <td>${z.zoneLabel}</td>
+            <td>${z.sampleCount}</td>
+            <td><span class="perf-badge ${cls}" style="cursor:default;">${Math.round(z.pct)}%</span></td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  document.getElementById("perfOverlay").classList.add("show");
+}
+
+function closePerfDetailModal() {
+  document.getElementById("perfOverlay").classList.remove("show");
+}
+
 // Mirrors wid() in demo.py — used only to seed a friendly, stable id when a
 // worker is first created. Editing the name afterward does NOT change the
 // id, so existing partner/incompatible/locked references never break.
@@ -529,8 +649,9 @@ function uniqueId(name, existing) {
 }
 
 // ---------------------------------------------------------------------------
-// Sample roster — the real 24-person crew from demo.py's ROSTER_DEFS, so
-// this loads with recognizable data instead of an empty table.
+// Sample roster — Dan's real 29-person crew (imported from an exported
+// worker_roster.json), so a fresh load or a "Reset to Sample Roster" starts
+// from the actual team instead of the old placeholder demo.py cast.
 // ---------------------------------------------------------------------------
 function sampleRoster() {
   const w = (id, name, extra) => Object.assign({
@@ -543,38 +664,35 @@ function sampleRoster() {
   }, extra);
 
   return [
-    w("pella", "Pella", { preferredPartners: ["cosette"] }),
-    w("dalnath", "Dal'nath", {
-      preferredPartners: ["sheara", "cosette"],
-      incompatibleWith: ["vayne"],
-      incompatibilityNotes: { vayne: "absolutely hate each other, never mix" },
-    }),
-    w("sheara", "Sheara", {}),
-    w("raven", "Raven", { preferredPartners: ["mira", "cosette"] }),
-    w("cosette", "Cosette", {}),
-    w("mira", "Mira", {}),
-    w("teuris", "Teu'ris", {
-      incompatibleWith: ["vayne"],
-      incompatibilityNotes: { vayne: "won't work with him at all" },
-      departmentRotationPool: "dairy",
-    }),
-    w("vayne", "Vayne", { preferredPartners: ["skyler", "nedylene"], unsuitableForNewHires: true }),
-    w("nedylene", "Nedylene", { preferredPartners: ["teuris"], departmentRotationPool: "dairy" }),
-    w("clare", "Clare", { preferredPartners: ["avicel"] }),
-    w("avicel", "Avicel", { preferredPartners: ["clare"] }),
-    w("danarys", "Danarys", { preferredPartners: ["drogo"], fixedDepartment: "frozen" }),
-    w("drogo", "Drogo", { preferredPartners: ["danarys"], fixedDepartment: "frozen" }),
-    w("lisette", "Lisette", { preferredPartners: ["lydia"] }),
-    w("skyler", "Skyler", { preferredPartners: ["vayne"] }),
-    w("lydia", "Lydia", { preferredPartners: ["lisette"] }),
-    w("charlotte", "Charlotte", { productionRating: "new", departmentRotationPool: "dairy" }),
-    w("niemira", "Niemira", { productionRating: "new" }),
-    w("iga", "Iga", { productionRating: "new", departmentRotationPool: "dairy" }),
-    w("cori", "Cori", { productionRating: "new" }),
-    w("josephine", "Josephine", { productionRating: "new" }),
-    w("olivia", "Olivia", { productionRating: "new" }),
-    w("ariel", "Ariel", { productionRating: "new" }),
-    w("caliope", "Caliope", { productionRating: "new" }),
+    w("andrew-scott", "Andrew Scott", { preferredZones: ["E", "F"], excludedZones: ["K", "J"] }),
+    w("alyx-williams", "Alyx Williams", { preferredZones: ["B", "C", "J"], departmentRotationPool: "dairy" }),
+    w("aviva-mcaffee", "Aviva McAffee", { preferredZones: ["C"], lockedWith: ["terah-biller"], excludedZones: ["J", "K"] }),
+    w("bradley-perry", "Bradley Perry", { preferredZones: ["K"], fixedDepartment: "frozen" }),
+    w("james-jones", "James Jones", { preferredZones: ["K"], fixedDepartment: "frozen" }),
+    w("evan-rosenburg", "Evan Rosenburg", { preferredZones: ["J", "I", "G"], departmentRotationPool: "dairy" }),
+    w("joe-toris", "Joe Toris", { preferredZones: ["I", "H", "G"], departmentRotationPool: "frozen" }),
+    w("ethan-humbert", "Ethan Humbert", { fixedDepartment: "dairy" }),
+    w("cleo-phelps", "Cleo Phelps", { preferredZones: ["B", "C", "J"], departmentRotationPool: "dairy" }),
+    w("terah-biller", "Terah Biller", { preferredZones: ["C"], lockedWith: ["aviva-mcaffee"], excludedZones: ["J", "K"] }),
+    w("gabe-bigler", "Gabe Bigler", { preferredZones: ["J"], departmentRotationPool: "dairy" }),
+    w("andy", "Andy", { productionRating: "new", preferredZones: ["G", "H", "I"] }),
+    w("damen", "Damen", { productionRating: "new", preferredZones: ["G", "H", "I"], preferredPartners: ["andy"] }),
+    w("huddy", "Huddy", { productionRating: "needs_improvement", preferredZones: ["G", "H", "I"], preferredPartners: ["andy", "damen"] }),
+    w("chris-b", "Chris B", { productionRating: "needs_improvement", preferredZones: ["G", "H", "I"] }),
+    w("mickey-baker", "Mickey Baker", { productionRating: "needs_improvement", preferredZones: ["I", "H", "G"] }),
+    w("zach", "Zach", { preferredZones: ["I", "H", "G"] }),
+    w("ken-biller", "Ken Biller", { preferredZones: ["G", "H", "D"] }),
+    w("hunnter-spencer", "Hunnter Spencer", { productionRating: "needs_improvement", preferredZones: ["I", "G", "H"], departmentRotationPool: "dairy" }),
+    w("chase-spencer", "Chase Spencer", { productionRating: "needs_improvement", preferredZones: ["I", "G", "H"] }),
+    w("lydia-plough", "Lydia Plough", { preferredZones: ["A", "F"] }),
+    w("lydia-flores", "Lydia Flores", { preferredZones: ["D", "F"], departmentRotationPool: "dairy" }),
+    w("regina-staples", "Regina Staples", { productionRating: "needs_improvement", preferredZones: ["D", "E", "B"], preferredPartners: ["lydia-flores"] }),
+    w("dennis-fletcher", "Dennis Fletcher", { productionRating: "needs_improvement", preferredZones: ["A", "D", "G"], departmentRotationPool: "dairy" }),
+    w("abigail-rich", "Abigail Rich", { productionRating: "needs_improvement", preferredZones: ["D", "E", "F"], incompatibleWith: ["dennis-fletcher"] }),
+    w("vicki-good", "Vicki Good", { preferredZones: ["E", "B"] }),
+    w("ashleigh-taylor", "Ashleigh Taylor", { preferredZones: ["E", "B", "C"], preferredPartners: ["vicki-good"] }),
+    w("karen-kroetz", "Karen Kroetz", { productionRating: "needs_improvement", preferredZones: ["A", "D", "F"] }),
+    w("jason", "Jason", { productionRating: "new", preferredZones: ["I", "G", "H"] }),
   ];
 }
 
@@ -679,8 +797,8 @@ function renderTable() {
 
     const perf = performancePercentFor(worker);
     const perfBadge = perf.measured
-      ? `<span class="perf-badge${perf.pct >= 105 ? " perf-fast" : perf.pct <= 90 ? " perf-slow" : ""}" title="${perf.sampleCount} logged zone-night(s), weighted by workload. Measures case-handling speed vs the 1 case/min baseline — everyone sharing a zone that night gets the same sample, so a strong or weak partner can pull this up or down too.">${Math.round(perf.pct)}%</span>`
-      : `<span class="perf-badge perf-pending" title="Starting baseline for '${ratingLabel(worker.productionRating)}' (${perf.pct}%) — ${perf.sampleCount} of ${MIN_SAMPLES_FOR_TREND} needed logged zone-nights so far. Switches to a measured trend once there's enough real data.">${Math.round(perf.pct)}%*</span>`;
+      ? `<span class="perf-badge${perf.pct >= 105 ? " perf-fast" : perf.pct <= 90 ? " perf-slow" : ""}" data-perf-detail="${worker.id}" title="${perf.sampleCount} logged zone-night(s), weighted by workload. Measures case-handling speed vs the 1 case/min baseline — everyone sharing a zone that night gets the same sample, so a strong or weak partner can pull this up or down too. Tap for a per-zone breakdown.">${Math.round(perf.pct)}%</span>`
+      : `<span class="perf-badge perf-pending" data-perf-detail="${worker.id}" title="Starting baseline for '${ratingLabel(worker.productionRating)}' (${perf.pct}%) — ${perf.sampleCount} of ${MIN_SAMPLES_FOR_TREND} needed logged zone-nights so far. Switches to a measured trend once there's enough real data. Tap for a per-zone breakdown.">${Math.round(perf.pct)}%*</span>`;
 
     tr.innerHTML = `
       <td class="name-cell">
@@ -704,6 +822,9 @@ function renderTable() {
 
   body.querySelectorAll("[data-edit]").forEach(btn => {
     btn.addEventListener("click", () => openModal(btn.getAttribute("data-edit")));
+  });
+  body.querySelectorAll("[data-perf-detail]").forEach(el => {
+    el.addEventListener("click", () => openPerfDetailModal(el.getAttribute("data-perf-detail")));
   });
 
   renderWarnings();
@@ -1625,6 +1746,9 @@ document.getElementById("btnSave").addEventListener("click", saveWorker);
 document.getElementById("btnSaveTop").addEventListener("click", saveWorker);
 document.getElementById("btnDelete").addEventListener("click", deleteWorker);
 document.getElementById("overlay").addEventListener("click", (e) => { if (e.target.id === "overlay") closeModal(); });
+
+document.getElementById("btnPerfClose").addEventListener("click", closePerfDetailModal);
+document.getElementById("perfOverlay").addEventListener("click", (e) => { if (e.target.id === "perfOverlay") closePerfDetailModal(); });
 
 document.getElementById("btnExport").addEventListener("click", exportRoster);
 document.getElementById("btnImport").addEventListener("click", () => document.getElementById("fileImport").click());
