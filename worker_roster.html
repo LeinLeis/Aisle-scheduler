@@ -1822,4 +1822,13 @@ roster = loadRoster();
 renderTable();
 
 // Long-pressing a worker bubble on Review & Correct or Output Schedule and
-// picking "Edi
+// picking "Edit" sends the browser here as worker_roster.html?edit=<id> —
+// open that worker's edit modal immediately instead of landing on the plain
+// table, so the round trip actually saves a step.
+const editParam = new URLSearchParams(location.search).get("edit");
+if (editParam && workerById(editParam)) {
+  openModal(editParam);
+}
+</script>
+</body>
+</html>
