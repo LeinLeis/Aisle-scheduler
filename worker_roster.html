@@ -209,6 +209,19 @@
     font-size: 12px;
     cursor: pointer;
     user-select: none;
+    /* Custom long-press (zonePrefChipGrid) needs the touch sequence to
+       stay ours for the full hold. Without these, iOS Safari's own
+       long-press gesture (the "Copy" / share-sheet callout) and Android's
+       text-selection magnifier can both step in partway through a hold and
+       fire a touchcancel — which looks exactly like "the highlight fades
+       and nothing happens," because it silently kills our pending timer
+       before it gets a chance to fire. touch-action: manipulation also
+       drops the ~300ms tap-delay browsers use to disambiguate a tap from a
+       double-tap-to-zoom, which was extra room for that hijack to happen in. */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   .chip-toggle.active { background: var(--accent-dim); border-color: var(--accent); color: #cfe0ff; }
   .chip-toggle.active.incompat-mode { background: #3a1e1c; border-color: var(--red); color: #ffb4ae; }
@@ -217,6 +230,14 @@
      (green -> cyan -> blue), long-press (or right-click) toggles Won't
      Work (red). See zonePrefChipGrid() in the script below. */
   .chip-toggle.zone-chip { transition: background 0.12s ease, border-color 0.12s ease; }
+  /* Live "still holding" indicator, added/removed in lockstep with the
+     actual JS timer (see startPress/cancelPress) rather than relying on
+     the browser's own tap-highlight — that one fades on its own schedule
+     even mid-hold and was making a working (or broken) long-press look
+     identical from the outside. This ring is the ground truth: if it
+     disappears before you lift your finger without having moved, the
+     touch sequence really was interrupted (touchcancel), not just faded. */
+  .chip-toggle.zone-chip.pressing { box-shadow: 0 0 0 2px var(--amber) inset; }
   .chip-toggle.pref-1 { background: linear-gradient(135deg, var(--pref-1), var(--pref-1-dark)); border-color: var(--pref-1); color: #04210a; font-weight: 700; }
   .chip-toggle.pref-2 { background: linear-gradient(135deg, var(--pref-2), var(--pref-2-dark)); border-color: var(--pref-2); color: #03262c; font-weight: 700; }
   .chip-toggle.pref-3 { background: linear-gradient(135deg, var(--pref-3), var(--pref-3-dark)); border-color: var(--pref-3); color: #eef1ff; font-weight: 700; }
@@ -742,7 +763,13 @@ function chipGrid(containerId, otherWorkers, selectedIds, mode) {
 // middle rank gets removed and everything below it needs to shift.
 // ---------------------------------------------------------------------------
 const ZONE_LONG_PRESS_MS = 550;
-const ZONE_LONG_PRESS_CANCEL_PX = 10;
+// A real finger held "still" on glass commonly drifts several px on its
+// own — 10px (the review_correct.html chip-menu value, tuned for a mouse)
+// was tight enough that ordinary touch jitter could read as a drag and
+// cancel the hold before the timer ever fired. 24px is roughly a touch
+// target's worth of slop, generous enough to absorb natural tremor without
+// swallowing an actual intentional swipe-away-to-cancel.
+const ZONE_LONG_PRESS_CANCEL_PX = 24;
 const ZONE_PREF_RANK_CLASS = ["pref-1", "pref-2", "pref-3"];
 
 // Per-container long-press state, keyed by containerId — see the note
@@ -799,13 +826,14 @@ function renderZonePrefChips(containerId) {
 function zonePrefChipGrid(containerId, prefArr, exclArr) {
   const el = document.getElementById(containerId);
   const state = zoneGridState[containerId] || (zoneGridState[containerId] = {
-    prefArr: null, exclArr: null, pressTimer: null, startPos: null, firedLongPress: false,
+    prefArr: null, exclArr: null, pressTimer: null, startPos: null, firedLongPress: false, pressingChip: null,
   });
   state.prefArr = prefArr;
   state.exclArr = exclArr;
   state.pressTimer = null;
   state.startPos = null;
   state.firedLongPress = false;
+  state.pressingChip = null;
 
   renderZonePrefChips(containerId);
 
@@ -836,16 +864,24 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
 
   function startPress(e) {
     if (e.type === "mousedown" && e.button !== 0) return; // left-click only; right-click handled separately
-    const zid = chipIdFor(e);
-    if (!zid) return;
+    const chip = e.target.closest(".chip-toggle");
+    if (!chip) return;
     const point = e.touches ? e.touches[0] : e;
     if (!point) return;
     state.firedLongPress = false;
     state.startPos = { x: point.clientX, y: point.clientY };
+    state.pressingChip = chip;
+    // Ground-truth "still holding" indicator — see the .pressing CSS note.
+    // Added the instant the press starts, removed the instant it's
+    // canceled (movement, release, touchcancel) or completes, so this ring
+    // is always an honest reflection of whether the timer below is still
+    // alive, unlike the browser's own tap-highlight which fades on its own
+    // clock regardless of finger state.
+    chip.classList.add("pressing");
     clearTimeout(state.pressTimer);
     state.pressTimer = setTimeout(() => {
       state.firedLongPress = true;
-      toggleExcluded(zid);
+      toggleExcluded(chip.dataset.id);
     }, ZONE_LONG_PRESS_MS);
   }
   function movePress(e) {
@@ -859,6 +895,10 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
     clearTimeout(state.pressTimer);
     state.pressTimer = null;
     state.startPos = null;
+    if (state.pressingChip) {
+      state.pressingChip.classList.remove("pressing");
+      state.pressingChip = null;
+    }
   }
 
   el.addEventListener("touchstart", startPress, { passive: true });
