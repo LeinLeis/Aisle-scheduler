@@ -862,6 +862,26 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
     return chip ? chip.dataset.id : null;
   }
 
+  // Both our own timer AND the browser's native touch-and-hold gesture can
+  // end up deciding "this was a long press" — Android Chrome in particular
+  // fires a real `contextmenu` DOM event on a touch-and-hold at almost
+  // exactly the same ~500ms mark most custom long-press code uses,
+  // completely independent of our setTimeout. Without a shared guard, BOTH
+  // fire toggleExcluded a few ms apart: whichever runs second immediately
+  // undoes whichever ran first, so the zone flashes excluded and then
+  // silently flips back — which is exactly "I can see it highlight, but it
+  // fades before I release, and it's not working." Routing every long-press
+  // trigger (the timer AND contextmenu) through this one guarded function
+  // means only the first one to arrive actually does anything.
+  function handleLongPressTrigger(zid) {
+    if (state.firedLongPress) return;
+    state.firedLongPress = true;
+    clearTimeout(state.pressTimer);
+    state.pressTimer = null;
+    state.pressingChip = null; // toggleExcluded below rebuilds the grid anyway
+    toggleExcluded(zid);
+  }
+
   function startPress(e) {
     if (e.type === "mousedown" && e.button !== 0) return; // left-click only; right-click handled separately
     const chip = e.target.closest(".chip-toggle");
@@ -880,8 +900,7 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
     chip.classList.add("pressing");
     clearTimeout(state.pressTimer);
     state.pressTimer = setTimeout(() => {
-      state.firedLongPress = true;
-      toggleExcluded(chip.dataset.id);
+      handleLongPressTrigger(chip.dataset.id);
     }, ZONE_LONG_PRESS_MS);
   }
   function movePress(e) {
@@ -912,8 +931,8 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
   el.addEventListener("contextmenu", e => {
     const zid = chipIdFor(e);
     if (!zid) return;
-    e.preventDefault();
-    toggleExcluded(zid);
+    e.preventDefault(); // always suppress any native menu, whether this is a real right-click or Android's touch-and-hold synthesizing one
+    handleLongPressTrigger(zid);
   });
   el.addEventListener("click", e => {
     // A long-press just fired (and already rebuilt the grid) — swallow the
