@@ -234,6 +234,7 @@
     <button id="btnImport">Import JSON</button>
     <input type="file" id="fileImport" accept="application/json">
     <button id="btnReset">Reset to Sample Roster</button>
+    <button class="danger" id="btnClearRoster">Clear Roster</button>
   </div>
 
   <div id="warnings"></div>
@@ -302,6 +303,11 @@
           <select id="fZone3"></select>
         </div>
         <div class="hint">Not used for Dairy/Frozen — those are covered under Department below.</div>
+      </div>
+
+      <div class="field">
+        <label style="color: var(--red);">Won't Work These Zones <span class="muted" style="font-weight:400;">(hard exclusion — never assigned here, by the algorithm or the general Dairy/Frozen backfill, no matter how short-staffed)</span></label>
+        <div class="checkbox-grid" id="excludedZonesGrid" style="border-color: var(--red);"></div>
       </div>
 
       <div class="field">
@@ -422,6 +428,13 @@ const ZONES = [
 ];
 const ZONE_LABEL = Object.fromEntries(ZONES.map(z => [z.id, z.label]));
 
+// "Won't Work These Zones" needs Dairy/Frozen as options too, unlike the
+// Preferred Zones picker above — someone who isn't dedicated OR rotation
+// pool for Dairy/Frozen can still get swept in by the general backfill
+// when it's short a body, so this is the only place to hard-block that.
+const EXCLUDABLE_ZONES = [...ZONES, { id: "J", label: "Dairy" }, { id: "K", label: "Frozen" }];
+const EXCLUDABLE_ZONE_LABEL = Object.fromEntries(EXCLUDABLE_ZONES.map(z => [z.id, z.label]));
+
 const STORAGE_KEY = "aisleScheduler_workerRoster_v1";
 // Written by output_schedule.html every time actual hours get logged
 // against a case-rate zone (Done button, or the manual actual-hours field)
@@ -443,18 +456,33 @@ function loadPerformanceHistory() {
 // Weighted by how much work each sample represents (a big heavy zone counts
 // more than a light one) rather than a plain average of per-night
 // percentages, so one short, easy night doesn't swing the number as hard as
-// a full one. Returns null with too little data to mean anything yet.
+// a full one.
 const MIN_SAMPLES_FOR_TREND = 3;
-function performancePercentFor(workerId) {
+// Below MIN_SAMPLES_FOR_TREND there's no measured trend yet, so the badge
+// shows the same starting-point percentage the scheduling algorithm itself
+// already assumes for each rating tier (see efficiency() in
+// assignment_engine.js: new=0.5, needs_improvement=0.75, on_pace=1.0) —
+// a real number from day one instead of a blank placeholder, clearly
+// marked as a starting assumption (result.measured = false) until enough
+// real nights replace it with an actual trend.
+function ratingBaselinePct(rating) {
+  if (rating === "new") return 50;
+  if (rating === "needs_improvement") return 75;
+  return 100;
+}
+function performancePercentFor(worker) {
   const history = loadPerformanceHistory();
-  const entry = history[workerId];
-  if (!entry || !entry.samples) return null;
-  const samples = Object.values(entry.samples);
-  if (samples.length < MIN_SAMPLES_FOR_TREND) return null;
+  const entry = history[worker.id];
+  const samples = entry && entry.samples ? Object.values(entry.samples) : [];
+  if (samples.length < MIN_SAMPLES_FOR_TREND) {
+    return { pct: ratingBaselinePct(worker.productionRating), sampleCount: samples.length, measured: false };
+  }
   const totalBaseline = samples.reduce((s, x) => s + x.baselinePersonMinutes, 0);
   const totalActual = samples.reduce((s, x) => s + x.actualPersonMinutes, 0);
-  if (totalActual <= 0) return null;
-  return { pct: (totalBaseline / totalActual) * 100, sampleCount: samples.length };
+  if (totalActual <= 0) {
+    return { pct: ratingBaselinePct(worker.productionRating), sampleCount: samples.length, measured: false };
+  }
+  return { pct: (totalBaseline / totalActual) * 100, sampleCount: samples.length, measured: true };
 }
 
 // Mirrors wid() in demo.py — used only to seed a friendly, stable id when a
@@ -485,6 +513,7 @@ function sampleRoster() {
     incompatibilityNotes: {}, productionRating: "on_pace",
     unsuitableForNewHires: false, lockedWith: [],
     fixedDepartment: null, departmentRotationPool: null,
+    excludedZones: [],
   }, extra);
 
   return [
@@ -616,11 +645,16 @@ function renderTable() {
     let deptHtml = '<span class="muted">—</span>';
     if (worker.fixedDepartment) deptHtml = `<span class="tag dept">${worker.fixedDepartment === "dairy" ? "Dairy" : "Frozen"} (every night)</span>`;
     else if (worker.departmentRotationPool) deptHtml = `<span class="tag dept">${worker.departmentRotationPool === "dairy" ? "Dairy" : "Frozen"} (rotation)</span>`;
+    const excludedZones = worker.excludedZones || [];
+    if (excludedZones.length) {
+      const excludedText = excludedZones.map(z => EXCLUDABLE_ZONE_LABEL[z] || z).join(", ");
+      deptHtml += `<div style="margin-top:3px;"><span class="tag incompat" title="Never assigned here, no matter how short-staffed">🚫 ${excludedText}</span></div>`;
+    }
 
-    const perf = performancePercentFor(worker.id);
-    const perfBadge = perf
+    const perf = performancePercentFor(worker);
+    const perfBadge = perf.measured
       ? `<span class="perf-badge${perf.pct >= 105 ? " perf-fast" : perf.pct <= 90 ? " perf-slow" : ""}" title="${perf.sampleCount} logged zone-night(s), weighted by workload. Measures case-handling speed vs the 1 case/min baseline — everyone sharing a zone that night gets the same sample, so a strong or weak partner can pull this up or down too.">${Math.round(perf.pct)}%</span>`
-      : `<span class="perf-badge perf-pending" title="Needs at least ${MIN_SAMPLES_FOR_TREND} logged zone-nights (case-rate zones only) before a trend means anything.">—%</span>`;
+      : `<span class="perf-badge perf-pending" title="Starting baseline for '${ratingLabel(worker.productionRating)}' (${perf.pct}%) — ${perf.sampleCount} of ${MIN_SAMPLES_FOR_TREND} needed logged zone-nights so far. Switches to a measured trend once there's enough real data.">${Math.round(perf.pct)}%*</span>`;
 
     tr.innerHTML = `
       <td class="name-cell">
@@ -685,7 +719,28 @@ function chipGrid(containerId, otherWorkers, selectedIds, mode) {
   });
 }
 
-let workingPartners = [], workingLocked = [], workingIncompat = [], workingIncompatNotes = {};
+// Same toggle-chip pattern as chipGrid above, but over EXCLUDABLE_ZONES
+// (zone objects) instead of other workers on the roster.
+function zoneChipGrid(containerId, selectedIds) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = "";
+  EXCLUDABLE_ZONES.forEach(z => {
+    const chip = document.createElement("div");
+    chip.className = "chip-toggle" + (selectedIds.includes(z.id) ? " active incompat-mode" : "");
+    chip.textContent = z.label;
+    chip.dataset.id = z.id;
+    chip.addEventListener("click", () => {
+      const idx = selectedIds.indexOf(z.id);
+      if (idx >= 0) selectedIds.splice(idx, 1);
+      else selectedIds.push(z.id);
+      chip.classList.toggle("active");
+      chip.classList.toggle("incompat-mode", chip.classList.contains("active"));
+    });
+    el.appendChild(chip);
+  });
+}
+
+let workingPartners = [], workingLocked = [], workingIncompat = [], workingIncompatNotes = {}, workingExcludedZones = [];
 
 function renderIncompatNotes(selectedIds) {
   const el = document.getElementById("incompatNotes");
@@ -749,10 +804,12 @@ function openModal(id) {
   workingLocked = worker ? [...worker.lockedWith] : [];
   workingIncompat = worker ? [...worker.incompatibleWith] : [];
   workingIncompatNotes = worker ? { ...worker.incompatibilityNotes } : {};
+  workingExcludedZones = worker ? [...(worker.excludedZones || [])] : [];
 
   chipGrid("partnersGrid", others, workingPartners, "partner");
   chipGrid("lockedGrid", others, workingLocked, "lock");
   chipGrid("incompatGrid", others, workingIncompat, "incompat");
+  zoneChipGrid("excludedZonesGrid", workingExcludedZones);
   renderIncompatNotes(workingIncompat);
   checkLockConflict();
 
@@ -792,6 +849,7 @@ function saveWorker() {
     lockedWith: [...workingLocked],
     incompatibleWith: [...workingIncompat],
     incompatibilityNotes: prunedNotes,
+    excludedZones: [...workingExcludedZones],
     fixedDepartment,
     departmentRotationPool,
   };
@@ -1127,6 +1185,7 @@ function addCheckedNamesAsWorkers() {
       incompatibilityNotes: {}, productionRating: "on_pace",
       unsuitableForNewHires: false, lockedWith: [],
       fixedDepartment: null, departmentRotationPool: null,
+      excludedZones: [],
     });
   });
 
@@ -1186,6 +1245,12 @@ document.getElementById("fileImport").addEventListener("change", (e) => {
 document.getElementById("btnReset").addEventListener("click", () => {
   if (!confirm("Reset to the sample 24-person roster? This replaces everything currently on the table.")) return;
   roster = sampleRoster();
+  saveRoster();
+  renderTable();
+});
+document.getElementById("btnClearRoster").addEventListener("click", () => {
+  if (!confirm(`Clear the entire roster? This permanently removes all ${roster.length} worker(s) — there's no undo. Export a JSON backup first if you might want them back.`)) return;
+  roster = [];
   saveRoster();
   renderTable();
 });
