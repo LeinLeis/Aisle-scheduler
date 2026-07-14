@@ -31,6 +31,16 @@
        indicators elsewhere and shouldn't shift when the rating palette does. */
     --rating-on-pace: #39ff14;
     --rating-needs-improvement: #228b22;
+    /* Zone-preference rank colors — green-to-blue gradient by priority.
+       Top pick is the same neon green as an On Pace rating (deliberately —
+       "top priority" and "top performer" read the same way at a glance),
+       fading toward blue as priority drops. */
+    --pref-1: #39ff14;
+    --pref-1-dark: #1a8a0a;
+    --pref-2: #22d3ee;
+    --pref-2-dark: #0c7c91;
+    --pref-3: #3b5bdb;
+    --pref-3-dark: #152a70;
     --radius: 8px;
   }
   * { box-sizing: border-box; }
@@ -203,6 +213,14 @@
   .chip-toggle.active { background: var(--accent-dim); border-color: var(--accent); color: #cfe0ff; }
   .chip-toggle.active.incompat-mode { background: #3a1e1c; border-color: var(--red); color: #ffb4ae; }
   .chip-toggle.active.lock-mode { background: var(--lock-dim); border-color: var(--lock); color: #ecd6ff; }
+  /* Merged zone-preference / Won't-Work grid — tap cycles preference rank
+     (green -> cyan -> blue), long-press (or right-click) toggles Won't
+     Work (red). See zonePrefChipGrid() in the script below. */
+  .chip-toggle.zone-chip { transition: background 0.12s ease, border-color 0.12s ease; }
+  .chip-toggle.pref-1 { background: linear-gradient(135deg, var(--pref-1), var(--pref-1-dark)); border-color: var(--pref-1); color: #04210a; font-weight: 700; }
+  .chip-toggle.pref-2 { background: linear-gradient(135deg, var(--pref-2), var(--pref-2-dark)); border-color: var(--pref-2); color: #03262c; font-weight: 700; }
+  .chip-toggle.pref-3 { background: linear-gradient(135deg, var(--pref-3), var(--pref-3-dark)); border-color: var(--pref-3); color: #eef1ff; font-weight: 700; }
+  .chip-toggle.zone-excluded { background: #3a1e1c; border-color: var(--red); color: #ffb4ae; }
   .note-inputs { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
   .note-inputs .note-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
   .note-inputs .note-row span { width: 90px; flex-shrink: 0; color: var(--text-dim); }
@@ -296,23 +314,13 @@
       </div>
 
       <div class="field">
-        <label>Preferred Zones (top 3, ranked — leave later ones blank if fewer)</label>
-        <div class="row-3">
-          <select id="fZone1"></select>
-          <select id="fZone2"></select>
-          <select id="fZone3"></select>
-        </div>
-        <div class="hint">Not used for Dairy/Frozen — those are covered under Department below.</div>
-      </div>
-
-      <div class="field">
-        <label style="color: var(--red);">Won't Work These Zones <span class="muted" style="font-weight:400;">(hard exclusion — never assigned here, by the algorithm or the general Dairy/Frozen backfill, no matter how short-staffed)</span></label>
-        <div class="checkbox-grid" id="excludedZonesGrid" style="border-color: var(--red);"></div>
+        <label>Zone Preferences <span class="muted" style="font-weight:400;">— tap a zone to prefer it (1st tap = top priority, 2nd = second, 3rd = third; tap it again to remove and shift the rest up). Long-press or right-click to mark <span style="color: var(--red);">Won't Work</span> instead — a hard exclusion, never assigned there no matter how short-staffed. Long-press again to clear it.</span></label>
+        <div class="checkbox-grid" id="zonePrefGrid"></div>
       </div>
 
       <div class="field">
         <label>Preferred Partners <span class="muted" style="font-weight:400;">(scoring bonus — doesn't have to be mutual)</span></label>
-        <div class="checkbox-grid" id="partnersGrid"></div>
+        <div class="checkbox-grid" id="partnersGrid" style="border-color: var(--green);"></div>
       </div>
 
       <div class="field">
@@ -323,7 +331,7 @@
 
       <div class="field">
         <label>Incompatible With <span class="muted" style="font-weight:400;">(hard exclusion — never placed together)</span></label>
-        <div class="checkbox-grid" id="incompatGrid"></div>
+        <div class="checkbox-grid" id="incompatGrid" style="border-color: var(--red);"></div>
         <div class="note-inputs" id="incompatNotes"></div>
       </div>
 
@@ -686,13 +694,6 @@ function renderTable() {
 // ---------------------------------------------------------------------------
 // Modal — add / edit
 // ---------------------------------------------------------------------------
-function populateZoneSelects() {
-  ["fZone1", "fZone2", "fZone3"].forEach(id => {
-    const sel = document.getElementById(id);
-    sel.innerHTML = '<option value="">— None —</option>' + ZONES.map(z => `<option value="${z.id}">${z.label}</option>`).join("");
-  });
-}
-
 function chipGrid(containerId, otherWorkers, selectedIds, mode) {
   const el = document.getElementById(containerId);
   el.innerHTML = "";
@@ -719,28 +720,128 @@ function chipGrid(containerId, otherWorkers, selectedIds, mode) {
   });
 }
 
-// Same toggle-chip pattern as chipGrid above, but over EXCLUDABLE_ZONES
-// (zone objects) instead of other workers on the roster.
-function zoneChipGrid(containerId, selectedIds) {
+// ---------------------------------------------------------------------------
+// Merged zone-preference / Won't-Work grid over EXCLUDABLE_ZONES (includes
+// Dairy/Frozen — the general backfill can still sweep in someone who isn't
+// dedicated/rotation-pool for either, so Won't Work needs to be able to
+// block those two same as any other zone; a tapped preference there is
+// harmless too, since Dairy/Frozen assignment is otherwise driven entirely
+// by Department below and preference only ever nudges backfill ordering).
+//
+// One tap: ensures the zone reads as "preferred" — clears Won't Work first
+// if it was set, then either appends it as the next open rank (1st/2nd/3rd,
+// up to 3) or, if it's already ranked, removes it and lets the array's own
+// order naturally promote whatever was below it (rank is just index+1, so
+// splicing one out shifts the rest up for free).
+//
+// Long-press (or right-click, for a mouse): the Won't-Work equivalent —
+// clears any preference rank first, then adds or removes the exclusion.
+//
+// Full grid is re-rendered after every toggle rather than patching
+// individual chips — simplest way to keep the rank colors correct when a
+// middle rank gets removed and everything below it needs to shift.
+// ---------------------------------------------------------------------------
+const ZONE_LONG_PRESS_MS = 550;
+const ZONE_LONG_PRESS_CANCEL_PX = 10;
+const ZONE_PREF_RANK_CLASS = ["pref-1", "pref-2", "pref-3"];
+
+function zonePrefChipGrid(containerId, prefArr, exclArr) {
   const el = document.getElementById(containerId);
   el.innerHTML = "";
+
+  function togglePreferred(zid) {
+    const exclIdx = exclArr.indexOf(zid);
+    if (exclIdx >= 0) exclArr.splice(exclIdx, 1);
+    const prefIdx = prefArr.indexOf(zid);
+    if (prefIdx >= 0) prefArr.splice(prefIdx, 1);
+    else if (prefArr.length < 3) prefArr.push(zid);
+    zonePrefChipGrid(containerId, prefArr, exclArr);
+  }
+  function toggleExcluded(zid) {
+    const prefIdx = prefArr.indexOf(zid);
+    if (prefIdx >= 0) prefArr.splice(prefIdx, 1);
+    const exclIdx = exclArr.indexOf(zid);
+    if (exclIdx >= 0) exclArr.splice(exclIdx, 1);
+    else exclArr.push(zid);
+    zonePrefChipGrid(containerId, prefArr, exclArr);
+  }
+
   EXCLUDABLE_ZONES.forEach(z => {
     const chip = document.createElement("div");
-    chip.className = "chip-toggle" + (selectedIds.includes(z.id) ? " active incompat-mode" : "");
-    chip.textContent = z.label;
+    chip.className = "chip-toggle zone-chip";
+    const prefIdx = prefArr.indexOf(z.id);
+    const excluded = exclArr.includes(z.id);
+    let prefix = "";
+    if (excluded) {
+      chip.classList.add("zone-excluded");
+      prefix = "🚫 ";
+    } else if (prefIdx >= 0) {
+      chip.classList.add(ZONE_PREF_RANK_CLASS[prefIdx]);
+      prefix = ["① ", "② ", "③ "][prefIdx];
+      chip.title = `Preferred (${["1st", "2nd", "3rd"][prefIdx]} choice) — tap to remove`;
+    } else {
+      chip.title = "Tap to prefer — long-press for Won't Work";
+    }
+    chip.textContent = prefix + z.label;
     chip.dataset.id = z.id;
-    chip.addEventListener("click", () => {
-      const idx = selectedIds.indexOf(z.id);
-      if (idx >= 0) selectedIds.splice(idx, 1);
-      else selectedIds.push(z.id);
-      chip.classList.toggle("active");
-      chip.classList.toggle("incompat-mode", chip.classList.contains("active"));
+
+    let pressTimer = null;
+    let startPos = null;
+    let firedLongPress = false;
+
+    function startPress(e) {
+      if (e.type === "mousedown" && e.button !== 0) return; // left-click only; right-click handled separately
+      const point = e.touches ? e.touches[0] : e;
+      if (!point) return;
+      firedLongPress = false;
+      startPos = { x: point.clientX, y: point.clientY };
+      clearTimeout(pressTimer);
+      pressTimer = setTimeout(() => {
+        firedLongPress = true;
+        toggleExcluded(z.id);
+      }, ZONE_LONG_PRESS_MS);
+    }
+    function movePress(e) {
+      if (!startPos) return;
+      const point = e.touches ? e.touches[0] : e;
+      if (!point) return;
+      const dx = point.clientX - startPos.x, dy = point.clientY - startPos.y;
+      if (Math.sqrt(dx * dx + dy * dy) > ZONE_LONG_PRESS_CANCEL_PX) cancelPress();
+    }
+    function cancelPress() {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+      startPos = null;
+    }
+
+    chip.addEventListener("touchstart", startPress, { passive: true });
+    chip.addEventListener("touchmove", movePress, { passive: true });
+    chip.addEventListener("touchend", cancelPress);
+    chip.addEventListener("touchcancel", cancelPress);
+    chip.addEventListener("mousedown", startPress);
+    chip.addEventListener("mouseup", cancelPress);
+    chip.addEventListener("mouseleave", cancelPress);
+    chip.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      toggleExcluded(z.id);
     });
+    chip.addEventListener("click", () => {
+      // A long-press just fired and re-rendered the grid (this chip is
+      // already gone) — swallowing isn't even needed here since the click
+      // target no longer exists post-rerender, but the flag is checked
+      // anyway in case the browser still delivers it to a stale reference.
+      if (firedLongPress) {
+        firedLongPress = false;
+        return;
+      }
+      togglePreferred(z.id);
+    });
+
     el.appendChild(chip);
   });
 }
 
-let workingPartners = [], workingLocked = [], workingIncompat = [], workingIncompatNotes = {}, workingExcludedZones = [];
+let workingPartners = [], workingLocked = [], workingIncompat = [], workingIncompatNotes = {}, workingExcludedZones = [], workingPreferredZones = [];
 
 function renderIncompatNotes(selectedIds) {
   const el = document.getElementById("incompatNotes");
@@ -789,12 +890,6 @@ function openModal(id) {
   document.getElementById("fFixedDept").value = worker ? (worker.fixedDepartment || "") : "";
   document.getElementById("fRotationPool").value = worker ? (worker.departmentRotationPool || "") : "";
 
-  populateZoneSelects();
-  const zones = worker ? worker.preferredZones : [];
-  document.getElementById("fZone1").value = zones[0] || "";
-  document.getElementById("fZone2").value = zones[1] || "";
-  document.getElementById("fZone3").value = zones[2] || "";
-
   document.getElementById("idPreview").textContent = isEdit
     ? ""
     : "id will be generated from the name automatically (e.g. \"Dal'nath\" → dalnath).";
@@ -805,11 +900,12 @@ function openModal(id) {
   workingIncompat = worker ? [...worker.incompatibleWith] : [];
   workingIncompatNotes = worker ? { ...worker.incompatibilityNotes } : {};
   workingExcludedZones = worker ? [...(worker.excludedZones || [])] : [];
+  workingPreferredZones = worker ? [...worker.preferredZones] : [];
 
   chipGrid("partnersGrid", others, workingPartners, "partner");
   chipGrid("lockedGrid", others, workingLocked, "lock");
   chipGrid("incompatGrid", others, workingIncompat, "incompat");
-  zoneChipGrid("excludedZonesGrid", workingExcludedZones);
+  zonePrefChipGrid("zonePrefGrid", workingPreferredZones, workingExcludedZones);
   renderIncompatNotes(workingIncompat);
   checkLockConflict();
 
@@ -826,11 +922,7 @@ function saveWorker() {
   const name = document.getElementById("fName").value.trim();
   if (!name) { alert("Name is required."); return; }
 
-  const zones = [
-    document.getElementById("fZone1").value,
-    document.getElementById("fZone2").value,
-    document.getElementById("fZone3").value,
-  ].filter(Boolean);
+  const zones = [...workingPreferredZones];
 
   const fixedDepartment = document.getElementById("fFixedDept").value || null;
   const departmentRotationPool = fixedDepartment ? null : (document.getElementById("fRotationPool").value || null);

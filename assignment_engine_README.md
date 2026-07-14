@@ -5,6 +5,22 @@ assignment, short-staffed stacking/reinforcement/shortfall). No OCR or photo
 dependency — it runs entirely on synthetic worker + case-count data, so it's
 testable now, before there's anything to photograph.
 
+## Note on `assignment_engine.js` — the actual live engine
+
+The browser app itself (`worker_roster.html` / `review_correct.html` /
+`output_schedule.html`) doesn't run this Python file — it runs
+`assignment_engine.js`, a client-side port, so the whole scheduler works
+with no server involved. Per its own header comment, the JS file is meant
+to be a faithful, function-for-function mirror of `assignment_engine.py`
+below — same phases, same ordering, same flags/notes. That held true
+through Step 2.7, but a handful of newer features (`excludedZones` / Won't
+Work, the light-aisle merge pass, and the corrected Dairy/Frozen
+locked-pair behavior — all covered below and marked "JS only") were built
+directly in the JS file to ship faster, and haven't been backported to this
+Python prototype yet. If you're reading this to understand what the live
+app actually does on a given night, the "JS only" tags below are the parts
+this file doesn't (yet) reflect.
+
 ## Files
 
 - **`assignment_engine.py`** — the actual algorithm. `Worker`, `Zone`,
@@ -210,6 +226,52 @@ No dependencies beyond the Python standard library.
   pulled out alone, even when they're the only possible donor for a
   genuinely struggling zone (in that case the struggling zone just stays
   struggling; the lock wins).
+- **Corrected Dairy/Frozen behavior when a locked pair can't fit together
+  (JS only).** Dairy (3) and Frozen (2) are hard headcount commitments, not
+  soft targets — every body either one takes beyond what it actually needs
+  is a body grocery didn't get, and grocery is the side that's chronically
+  short. The backfill now seats a locked pair together only when the
+  department genuinely has 2 open seats left for them; otherwise it skips
+  that candidate entirely — never splits them (one into Dairy, one into
+  Frozen), and never runs the department over its guaranteed headcount to
+  squeeze them in — leaving them for the general fill instead, where
+  they'll most likely land together in grocery. The department itself just
+  runs a seat short that night, honestly flagged
+  (`fixed_department_understaffed`) rather than silently absorbing the
+  overage or breaking the pair. See "Bugs worth knowing about" below.
+- **Per-worker zone exclusions — "Won't Work These Zones" (JS only,
+  `Worker.excludedZones`).** A harder rule than a preference: zones a
+  worker is simply never placed in, no matter how short-staffed the night
+  gets — including by the general Dairy/Frozen backfill above. Checked
+  everywhere a worker is about to pick up a *new* zone (initial fill,
+  backfill, the light-aisle merge, every rebalance pass, the new-hire
+  safety net) via `isExcludedZone()`. Doesn't apply to a zone someone's
+  already working, and doesn't override `fixedDepartment` /
+  `departmentRotationPool` — those are trusted as deliberate individual
+  opt-ins; a worker with both set on the same zone is a roster data
+  contradiction to fix at the source, not something the algorithm
+  second-guesses.
+- **Light-aisle merge — two light zones, one shared team (JS only,
+  `mergeLightSoloZones()`, Step 2.55).** A light aisle that only drew 1
+  person out of the baseline fill doesn't work it alone — instead of
+  pulling in a spare hand from wherever (which just relocates the
+  shortage), it's paired with another light zone and both are covered by
+  one shared 3-person team, same total headcount as "1 alone + 1 normal
+  pair" would have used. Reaches for the two known real-world pairings
+  first (Aisle 2/3 + Aisle 8/9, Aisle 14/15 + Aisle 19 —
+  `PREFERRED_LIGHT_MERGE_PAIRS`), even on a night one side's own case count
+  doesn't clear the "light" bar on its own (Aisle 2/3 carries coffee, Aisle
+  8/9 carries soup — both real, daily items), before falling back to
+  whichever other light zone has the least work.
+- **Opt-in donor pass for a genuinely heavy zone (JS only,
+  `freeDonorFromPreferredPair()`, Step 2.72).** Runs after the normal
+  overstaffed-zone rebalance already tried and failed to find an easier
+  2+-person donor with slack. If a specific zone is over target and nobody
+  has real slack to lend, this consolidates one of the two known light
+  pairs above (both still at a completely ordinary, fully-staffed 2 each —
+  not solo, not already merged, not struggling) into a shared 3-person team
+  and hands the freed 3rd body to the heavy zone. Capped to one freed hand
+  per heavy zone per run — "put 3 people in them," not 4.
 
 - Worker ids in `demo.py` (`wid()`) `.strip()` before lowercasing, so real
   intake sheets — where names come in as a "First Last" column value — won't
@@ -226,6 +288,13 @@ No dependencies beyond the Python standard library.
 - `hire_date` reminders and the auto-promotion rule (`new` → `needs_improvement`
   after 5 hits at 0.75) — these depend on tracking data across *multiple
   nights*, and this prototype only models a single night at a time
+- Python/JS parity has drifted: `excludedZones`/Won't Work, the light-aisle
+  merge pass (Steps 2.55 and 2.72), and the corrected Dairy/Frozen
+  locked-pair backfill behavior were all built directly in
+  `assignment_engine.js` and haven't been ported back to this Python
+  prototype (or its test suite) yet. Anyone reaching for this file to
+  understand current live behavior, rather than as a historical reference,
+  should read the "JS only" items in "What's implemented" above first.
 
 ## Bugs worth knowing about (found and fixed during this build)
 
@@ -281,3 +350,25 @@ worker by name with their actual nightly total, instead of a single
 opaque aggregate number. Test 13 locks in the non-inflation; the corrected
 `compute_shortfall` signature now returns the per-worker breakdown too
 (`over_by_worker`) for anything that wants to display it directly.
+
+**Locked pair split across Dairy and Frozen (JS only — `assignment_engine.js`).**
+A real live-roster night put one half of a locked pair in Dairy and the
+other in Frozen, even though both departments had genuine open seats and
+could have taken them together. The backfill correctly detected "this
+candidate would split a lock," but when it couldn't find 2 clean open
+seats in the *current* department, it fell back to seating the candidate
+alone anyway instead of skipping them and letting the general fill try to
+reunite the pair somewhere else. A first attempted fix let Dairy or Frozen
+run one over its guaranteed headcount just to keep the pair together —
+that's its own bug, once Dairy=3/Frozen=2 are treated as fixed commitments
+a chronically short-staffed grocery floor can't afford to subsidize.
+Fixed by making the backfill do exactly one of two things with a
+lock-splitting candidate: seat the pair together, but only when the
+department has a genuine 2-seat opening for them, or skip the candidate
+entirely — never split, never overstaffed — leaving them for the general
+fill, where they'll most likely land together in grocery instead. The
+department itself just runs a seat short that night
+(`fixed_department_understaffed`), same as any other honest shortage.
+Verified with targeted test scripts rather than `test_assignment_engine.py`
+directly, since this fix currently only exists in the JS port — see the
+Python/JS parity note in "What's NOT in here yet."
