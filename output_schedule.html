@@ -771,7 +771,19 @@ function recordPerformanceSample(zoneId, actualHours) {
   const hiddenHours = zone.department === "juice" ? settings.juiceHiddenTaskHours : 0;
   const caseHandlingHours = Math.max(0.01, actualHours - hiddenHours);
   const baselinePersonMinutes = zone.caseCount / settings.casePerMinuteRate;
-  const actualPersonMinutes = caseHandlingHours * 60 * AE.effectiveCapacity(group, settings);
+  // Raw headcount, deliberately NOT AE.effectiveCapacity(group, settings).
+  // Capacity already discounts a Needs Improvement/New worker's expected
+  // output (0.75 / 0.5) — using it here would measure actual time against
+  // a target that's already lowered for them, so someone starting at a
+  // measured 75% who ekes out a 2% real improvement would score close to
+  // 100% instead of ~77%. That's the tier system's own assumption leaking
+  // into the number that's supposed to be checking whether that assumption
+  // still holds. This badge needs to measure real speed against the flat
+  // 1-case/min baseline, the same for everyone regardless of who's on the
+  // clock — that's the only way it can ever say "this Needs Improvement
+  // worker has actually caught up," which is the entire point of tracking
+  // it separately from the tier.
+  const actualPersonMinutes = caseHandlingHours * 60 * group.length;
   if (actualPersonMinutes <= 0) return;
 
   const sampleKey = `${zoneId}::${shiftDateKey(new Date())}`;
