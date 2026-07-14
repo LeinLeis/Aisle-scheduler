@@ -762,7 +762,17 @@ function chipGrid(containerId, otherWorkers, selectedIds, mode) {
 // individual chips — simplest way to keep the rank colors correct when a
 // middle rank gets removed and everything below it needs to shift.
 // ---------------------------------------------------------------------------
-const ZONE_LONG_PRESS_MS = 550;
+// Shorter than the 550ms used elsewhere in the app (e.g. the worker-bubble
+// long-press menu) on purpose: Android's own touch-and-hold gesture
+// detector runs on its own clock, independent of ours (stock default is
+// ViewConfiguration.getLongPressTimeout() = 500ms), and when IT decides a
+// hold has happened, it can send a real touchcancel to end our touch
+// sequence and hand the gesture off to its own handling — which kills our
+// timer outright, no CSS workaround prevents it reliably across devices.
+// Sitting comfortably under Android's ~500ms means our own timer normally
+// wins the race and fires first; handleTouchCancel() below is the
+// belt-and-suspenders backstop for whenever it doesn't.
+const ZONE_LONG_PRESS_MS = 380;
 // A real finger held "still" on glass commonly drifts several px on its
 // own — 10px (the review_correct.html chip-menu value, tuned for a mouse)
 // was tight enough that ordinary touch jitter could read as a drag and
@@ -826,12 +836,13 @@ function renderZonePrefChips(containerId) {
 function zonePrefChipGrid(containerId, prefArr, exclArr) {
   const el = document.getElementById(containerId);
   const state = zoneGridState[containerId] || (zoneGridState[containerId] = {
-    prefArr: null, exclArr: null, pressTimer: null, startPos: null, firedLongPress: false, pressingChip: null,
+    prefArr: null, exclArr: null, pressTimer: null, startPos: null, startTime: null, firedLongPress: false, pressingChip: null,
   });
   state.prefArr = prefArr;
   state.exclArr = exclArr;
   state.pressTimer = null;
   state.startPos = null;
+  state.startTime = null;
   state.firedLongPress = false;
   state.pressingChip = null;
 
@@ -890,6 +901,7 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
     if (!point) return;
     state.firedLongPress = false;
     state.startPos = { x: point.clientX, y: point.clientY };
+    state.startTime = Date.now();
     state.pressingChip = chip;
     // Ground-truth "still holding" indicator — see the .pressing CSS note.
     // Added the instant the press starts, removed the instant it's
@@ -914,16 +926,38 @@ function zonePrefChipGrid(containerId, prefArr, exclArr) {
     clearTimeout(state.pressTimer);
     state.pressTimer = null;
     state.startPos = null;
+    state.startTime = null;
     if (state.pressingChip) {
       state.pressingChip.classList.remove("pressing");
       state.pressingChip = null;
     }
   }
 
+  // touchcancel does NOT necessarily mean "the user backed out" — Android in
+  // particular sends it partway through a genuine hold, the moment its own
+  // gesture detector decides this was a long-press and takes the touch
+  // sequence over for its own handling. Treating every touchcancel as an
+  // abort is exactly what was making the amber ring fade out with nothing
+  // happening: the OS was canceling us right as (or just before) our own
+  // timer would have fired. If enough time has already elapsed for this to
+  // plausibly BE the long-press completing, honor it as one instead of
+  // discarding the gesture — worst case, an unrelated touchcancel that
+  // happens to land late gets treated as a long-press once in a while,
+  // which is a far better failure mode than reliably losing real ones.
+  function handleTouchCancel() {
+    const chip = state.pressingChip;
+    const elapsed = state.startTime ? Date.now() - state.startTime : 0;
+    if (chip && elapsed >= ZONE_LONG_PRESS_MS - 100) {
+      handleLongPressTrigger(chip.dataset.id);
+    } else {
+      cancelPress();
+    }
+  }
+
   el.addEventListener("touchstart", startPress, { passive: true });
   el.addEventListener("touchmove", movePress, { passive: true });
   el.addEventListener("touchend", cancelPress);
-  el.addEventListener("touchcancel", cancelPress);
+  el.addEventListener("touchcancel", handleTouchCancel);
   el.addEventListener("mousedown", startPress);
   el.addEventListener("mousemove", movePress);
   el.addEventListener("mouseup", cancelPress);
