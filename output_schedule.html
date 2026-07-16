@@ -337,6 +337,7 @@
     <a class="navlink" href="worker_roster.html">Worker Roster</a>
     <a class="navlink" href="review_correct.html">Assignment</a>
     <a class="navlink active" href="output_schedule.html">Output Schedule</a>
+    <a class="navlink" href="zone_priority.html">Zone Priority</a>
   </div>
 
   <div id="emptyState" class="empty-state" style="display:none;">
@@ -1625,6 +1626,7 @@ if ("serviceWorker" in navigator) {
     { file: "worker_roster.html", label: "Roster" },
     { file: "review_correct.html", label: "Assignment" },
     { file: "output_schedule.html", label: "Schedule" },
+    { file: "zone_priority.html", label: "Priority" },
   ];
   const here = location.pathname.split("/").pop() || "worker_roster.html";
   const idx = PAGES.findIndex(p => p.file === here);

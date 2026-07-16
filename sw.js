@@ -14,13 +14,18 @@
 // through the plain nav-tab link while a query-stringed URL (like
 // worker_roster.html?edit=<id>, which was never precached and almost
 // always requires an actual network hit) shows the real, current version.
-const CACHE_NAME = "aisle-scheduler-v4";
+// Bumped v4 -> v5: added zone_priority.html as a 4th core screen — same
+// "bump on any CORE_ASSETS change" rule, otherwise a phone that installed
+// under v4 would never precache the new page for offline use until some
+// unrelated cache-busting event happened to come along.
+const CACHE_NAME = "aisle-scheduler-v5";
 const CORE_ASSETS = [
   "./",
   "./index.html",
   "./worker_roster.html",
   "./review_correct.html",
   "./output_schedule.html",
+  "./zone_priority.html",
   "./assignment_engine.js",
   "./manifest.json",
   "./icon-192.png",

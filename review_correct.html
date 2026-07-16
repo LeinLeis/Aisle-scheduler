@@ -423,6 +423,7 @@
     <a class="navlink" href="worker_roster.html">Worker Roster</a>
     <a class="navlink active" href="review_correct.html">Assignment</a>
     <a class="navlink" href="output_schedule.html">Output Schedule</a>
+    <a class="navlink" href="zone_priority.html">Zone Priority</a>
   </div>
 
   <div class="top-actions" id="topActions" style="display:none;">
@@ -572,9 +573,22 @@ const FINALIZED_KEY = "aisleScheduler_finalizedSchedule_v1";
 // so it carries forward as a sensible starting point each time Review &
 // Correct is opened, rather than resetting to "everyone" every night.
 const CREW_KEY = "aisleScheduler_tonightCrew_v1";
+// Set on the Zone Priority screen — a standing, hand-picked draw order per
+// zone, read fresh here at page load so a change made there before hitting
+// Generate always takes effect (same one-settings-object-per-page-load
+// pattern every other setting on this page already follows).
+const ZONE_PRIORITY_KEY = "aisleScheduler_zonePriority_v1";
+
+function loadZonePriority() {
+  try {
+    return JSON.parse(localStorage.getItem(ZONE_PRIORITY_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+}
 
 const GROCERY_ZONE_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"];
-const settings = AE.makeSettings({ casePerMinuteRate: 1.0 });
+const settings = AE.makeSettings({ casePerMinuteRate: 1.0, zonePriority: loadZonePriority() });
 
 let roster = [];       // AE.makeWorker-normalized, from the roster screen's localStorage
 let rosterById = {};
@@ -2460,6 +2474,7 @@ if ("serviceWorker" in navigator) {
     { file: "worker_roster.html", label: "Roster" },
     { file: "review_correct.html", label: "Assignment" },
     { file: "output_schedule.html", label: "Schedule" },
+    { file: "zone_priority.html", label: "Priority" },
   ];
   const here = location.pathname.split("/").pop() || "worker_roster.html";
   const idx = PAGES.findIndex(p => p.file === here);

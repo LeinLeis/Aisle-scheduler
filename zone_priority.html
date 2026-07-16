@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Zone Priority — Aisle Freight Scheduler</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="assignment_engine.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --text-dim: #9aa1ae;
+    --accent: #4f8cff;
+    --accent-dim: #2a4a8a;
+    --green: #3fb950;
+    --amber: #d9a441;
+    --red: #e5534b;
+    --rating-on-pace: #39ff14;
+    --rating-needs-improvement: #228b22;
+    --pref-1: #39ff14;
+    --pref-1-dark: #1a8a0a;
+    --pref-2: #22d3ee;
+    --pref-2-dark: #0c7c91;
+    --pref-3: #3b5bdb;
+    --pref-3-dark: #152a70;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  h3 { font-size: 13px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 18px; line-height: 1.5; }
+
+  .nav-row { display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .nav-row a.navlink { color: var(--text-dim); text-decoration: none; font-size: 13px; padding: 4px 0; border-bottom: 2px solid transparent; }
+  .nav-row a.navlink:hover { color: var(--text); }
+  .nav-row a.navlink.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+  }
+  button:hover { background: #262b36; border-color: #3a4150; }
+  button.small { padding: 4px 10px; font-size: 11.5px; }
+
+  .banner {
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    margin-bottom: 14px;
+    line-height: 1.6;
+  }
+  .banner.warn { background: #2a2013; border: 1px solid var(--amber); color: #f0cf8c; }
+
+  .zone-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .zone-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .zone-panel.dept { border-color: #2b4030; }
+  .zone-panel-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .zone-panel-head .zone-name { font-weight: 700; font-size: 14.5px; }
+  .zone-panel-head .zone-meta { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+  .zone-panel .clear-btn { font-size: 11px; padding: 3px 8px; margin-top: 8px; border-color: var(--text-dim); color: var(--text-dim); background: transparent; }
+  .zone-panel .clear-btn:hover { background: #262b36; }
+
+  .priority-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .priority-row { display: flex; align-items: center; gap: 8px; }
+  .priority-rank {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11.5px; font-weight: 700;
+    color: #04210a;
+  }
+  .priority-rank.rank-0 { background: linear-gradient(135deg, var(--pref-1), var(--pref-1-dark)); color: #04210a; }
+  .priority-rank.rank-1 { background: linear-gradient(135deg, var(--pref-2), var(--pref-2-dark)); color: #03262c; }
+  .priority-rank.rank-2 { background: linear-gradient(135deg, var(--pref-3), var(--pref-3-dark)); color: #eef1ff; }
+  .priority-rank.rank-3 { background: var(--panel-2); border: 1px solid var(--border); color: var(--text-dim); }
+  select.priority-select {
+    flex: 1;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+
+  .status-msg { font-size: 12px; color: var(--green); }
+  .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
+
+  @media print {
+    .nav-row, button { display: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <h1>Zone Priority</h1>
+  <div class="subtitle">
+    When more than one person on the crew prefers the same zone, this decides who the algorithm draws in first. Ranking someone here only matters if they're actually eligible for that zone (already prefer it, or would otherwise be a candidate) — it never overrides a locked pair, an incompatibility, or someone's own Won't Work list. Set up to 4 names per zone, in the order you want them pulled.
+  </div>
+
+  <div class="nav-row">
+    <a class="navlink" href="worker_roster.html">Worker Roster</a>
+    <a class="navlink" href="review_correct.html">Assignment</a>
+    <a class="navlink" href="output_schedule.html">Output Schedule</a>
+    <a class="navlink active" href="zone_priority.html">Zone Priority</a>
+  </div>
+
+  <div id="noRosterBanner" class="banner warn" style="display:none;">
+    No worker roster found. <a href="worker_roster.html" style="color:var(--accent);">Open the Worker Roster screen</a> to add workers first.
+  </div>
+
+  <div class="top-bar">
+    <span class="status-msg" id="statusMsg"></span>
+  </div>
+
+  <div class="zone-grid" id="zoneGrid"></div>
+
+<script>
+const AE = window.AssignmentEngine;
+const ROSTER_KEY = "aisleScheduler_workerRoster_v1";
+const ZONE_PRIORITY_KEY = "aisleScheduler_zonePriority_v1";
+const PRIORITY_SLOTS = AE.MAX_ZONE_PRIORITY_SLOTS || 4;
+
+let roster = [];
+let zonePriority = {}; // { [zoneId]: [workerId, ...] }, holes allowed (unranked slots are omitted, not null-padded, on save)
+
+function loadRoster() {
+  const raw = localStorage.getItem(ROSTER_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw).map(AE.makeWorker);
+  } catch (e) {
+    return [];
+  }
+}
+
+function loadZonePriority() {
+  try {
+    return JSON.parse(localStorage.getItem(ZONE_PRIORITY_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveZonePriority() {
+  localStorage.setItem(ZONE_PRIORITY_KEY, JSON.stringify(zonePriority));
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+function sortedByName(list) {
+  return [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+// A short hint appended to a worker's option label so it's obvious at a
+// glance who already asked for this zone themselves, vs. someone being
+// hand-placed here with no stated preference at all.
+function prefHint(worker, zoneId) {
+  const idx = worker.preferredZones.indexOf(zoneId);
+  if (idx === -1) return "";
+  const ord = ["1st", "2nd", "3rd"][idx] || `${idx + 1}th`;
+  return ` — prefers this zone (${ord} choice)`;
+}
+
+function slotsFor(zoneId) {
+  const raw = zonePriority[zoneId] || [];
+  const slots = raw.slice(0, PRIORITY_SLOTS);
+  while (slots.length < PRIORITY_SLOTS) slots.push(null);
+  return slots;
+}
+
+function setSlot(zoneId, slotIdx, workerId) {
+  const slots = slotsFor(zoneId);
+  // A worker can only occupy one rank per zone — if they're picked into
+  // this slot while already sitting in another slot for the same zone,
+  // vacate the old slot instead of letting them double up.
+  if (workerId) {
+    for (let i = 0; i < slots.length; i++) {
+      if (i !== slotIdx && slots[i] === workerId) slots[i] = null;
+    }
+  }
+  slots[slotIdx] = workerId || null;
+  zonePriority[zoneId] = slots.filter(id => id); // compact — drop the holes on save
+  saveZonePriority();
+}
+
+function clearZone(zoneId) {
+  delete zonePriority[zoneId];
+  saveZonePriority();
+  render();
+}
+
+function render() {
+  document.getElementById("noRosterBanner").style.display = roster.length ? "none" : "block";
+
+  const active = sortedByName(roster.filter(w => w.active));
+  const grid = document.getElementById("zoneGrid");
+  grid.innerHTML = AE.ZONE_DEFS.map(zone => {
+    const isDept = zone.department === "dairy" || zone.department === "frozen";
+    const slots = slotsFor(zone.id);
+    const rowsHtml = slots.map((workerId, i) => {
+      const optionsHtml = active.map(w =>
+        `<option value="${w.id}" ${w.id === workerId ? "selected" : ""}>${w.name}${prefHint(w, zone.id)}</option>`
+      ).join("");
+      return `
+        <div class="priority-row">
+          <span class="priority-rank rank-${i}">${i + 1}</span>
+          <select class="priority-select" data-zone-id="${zone.id}" data-slot="${i}">
+            <option value="">— none —</option>
+            ${optionsHtml}
+          </select>
+        </div>
+      `;
+    }).join("");
+    return `
+      <div class="zone-panel${isDept ? " dept" : ""}">
+        <div class="zone-panel-head">
+          <span class="zone-name">${AE.zoneLabel(zone)}</span>
+          <span class="zone-meta">${zone.department}</span>
+        </div>
+        <div class="priority-rows">${rowsHtml}</div>
+        <button type="button" class="clear-btn" data-clear-zone="${zone.id}">Clear this zone</button>
+      </div>
+    `;
+  }).join("");
+
+  grid.querySelectorAll("select.priority-select").forEach(sel => {
+    sel.addEventListener("change", () => {
+      setSlot(sel.dataset.zoneId, parseInt(sel.dataset.slot, 10), sel.value);
+      render();
+    });
+  });
+  grid.querySelectorAll("[data-clear-zone]").forEach(btn => {
+    btn.addEventListener("click", () => clearZone(btn.dataset.clearZone));
+  });
+}
+
+function load() {
+  roster = loadRoster();
+  zonePriority = loadZonePriority();
+  render();
+}
+
+load();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+
+<script>
+// ---------------------------------------------------------------------
+// Swipe left/right between screens — same mechanism as the other three
+// pages, extended to this one so it stays part of the same swipeable set
+// instead of being a dead end you can only reach via the nav-row link.
+// ---------------------------------------------------------------------
+(function () {
+  const PAGES = [
+    { file: "worker_roster.html", label: "Roster" },
+    { file: "review_correct.html", label: "Assignment" },
+    { file: "output_schedule.html", label: "Schedule" },
+    { file: "zone_priority.html", label: "Priority" },
+  ];
+  const here = location.pathname.split("/").pop() || "worker_roster.html";
+  const idx = PAGES.findIndex(p => p.file === here);
+  if (idx === -1) return;
+
+  function injectDots() {
+    const wrap = document.createElement("div");
+    wrap.className = "swipe-dots no-print";
+    wrap.innerHTML = PAGES.map((p, i) => `<span class="swipe-dot${i === idx ? " active" : ""}"></span>`).join("");
+    document.body.appendChild(wrap);
+    const style = document.createElement("style");
+    style.textContent = `
+      .swipe-dots { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 7px; z-index: 400; pointer-events: none; }
+      .swipe-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+      .swipe-dot.active { background: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function goTo(newIdx) {
+    if (newIdx < 0 || newIdx >= PAGES.length) return;
+    location.href = PAGES[newIdx].file;
+  }
+
+  const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, .overlay, .modal";
+  const SWIPE_THRESHOLD = 70;
+  let startX = null, startY = null, startedOnInteractive = false;
+
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    startedOnInteractive = !!e.target.closest(INTERACTIVE_SELECTOR);
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (startX === null || startedOnInteractive) { startX = null; return; }
+    const t = e.changedTouches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    startX = null;
+    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) goTo(idx + 1); // swipe left -> next page
+    else goTo(idx - 1);        // swipe right -> previous page
+  }, { passive: true });
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDots);
+  else injectDots();
+})();
+</script>
+</body>
+</html>
