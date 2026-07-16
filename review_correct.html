@@ -217,6 +217,10 @@
   .checklist-item .cl-label { flex: 1; display: flex; align-items: center; gap: 6px; }
   .checklist-item .cl-meta { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
   .checklist-item .cl-meta.here { color: var(--green); }
+  /* Same color language as the Zone Priority picker — green name text
+     means this worker already prefers the zone being filled, so it's
+     obvious at a glance who's a natural fit before checking anyone off. */
+  .checklist-item .cl-label.opt-green { color: var(--rating-on-pace); }
   .zone-card .zone-stats { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
   .zone-card .zone-stats b { color: var(--text); }
   .time-compare {
@@ -2016,10 +2020,11 @@ function openBulkAssignModal(zoneId) {
     const here = inThisZone.has(w.id);
     const elsewhere = zonesContaining(w.id).filter(zid => zid !== zoneId);
     const metaText = here ? "here" : elsewhere.length ? elsewhere.map(zid => (zoneById[zid] ? AE.zoneLabel(zoneById[zid]) : zid)).join(", ") : "unassigned";
+    const prefersThisZone = w.preferredZones.includes(zoneId);
     return `
       <label class="checklist-item">
         <input type="checkbox" data-worker-id="${w.id}" ${here ? "checked" : ""}>
-        <span class="cl-label"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>
+        <span class="cl-label${prefersThisZone ? " opt-green" : ""}"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>
         <span class="cl-meta${here ? " here" : ""}">${metaText}</span>
       </label>
     `;
