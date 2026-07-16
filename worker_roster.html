@@ -1505,33 +1505,50 @@ async function backupEverything() {
   const json = JSON.stringify(payload, null, 2);
   const filename = backupFileName();
 
-  if (navigator.canShare && navigator.share) {
-    const file = new File([json], filename, { type: "application/json" });
-    if (navigator.canShare({ files: [file] })) {
-      try {
+  if (navigator.share) {
+    try {
+      // text/plain shares far more reliably across iOS/Android share sheets
+      // than application/json — some OS versions quietly refuse to list
+      // ANY share target for a JSON-typed file, which makes canShare()
+      // report false with zero visible feedback (exactly the "nothing
+      // happens" symptom this replaces). Still round-trips fine through
+      // Restore Everything below, which only cares about the JSON content,
+      // not the MIME type it arrived with.
+      const file = new File([json], filename, { type: "text/plain" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
           files: [file],
           title: "Aisle Scheduler backup",
           text: `Aisle Scheduler data exported ${new Date().toLocaleString()}`,
         });
         return;
-      } catch (e) {
-        // AbortError = the user backed out of the share sheet on purpose —
-        // respect that and stop, rather than also forcing a download they
-        // didn't ask for. Any other failure falls through to the download
-        // below so the button still does something useful.
-        if (e && e.name === "AbortError") return;
       }
+    } catch (e) {
+      // AbortError = the user backed out of the share sheet on purpose —
+      // respect that and stop, rather than also forcing a download they
+      // didn't ask for. Any other failure falls through to the download
+      // below so the button still does something useful.
+      if (e && e.name === "AbortError") return;
     }
   }
 
+  // Sharing isn't available (or failed) here — fall back to a plain
+  // download, and actually tell the person that's what happened instead of
+  // leaving them staring at a button that silently did nothing.
   const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  // Appending before .click() and removing after is a known reliability
+  // fix for triggering downloads from an installed (standalone) PWA on
+  // iOS/Android — an anchor that was never attached to the document can
+  // silently fail to trigger a download in that context.
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   URL.revokeObjectURL(url);
+  alert(`Sharing isn't available here, so this downloaded a file instead: "${filename}". Check Downloads or Files, then send it to the other device however you'd like (AirDrop, Messages, email...) and use Restore Everything there.`);
 }
 
 function restoreEverything(file) {
