@@ -228,14 +228,20 @@ function clearZone(zoneId) {
 function render() {
   document.getElementById("noRosterBanner").style.display = roster.length ? "none" : "block";
 
-  const active = sortedByName(roster.filter(w => w.active));
+  // Full roster here, not just tonight's active crew — same reasoning as
+  // Worker Roster's own table: this is a standing config, not tied to any
+  // one night, so someone who's inactive right now (or between shifts)
+  // still needs to show up to be ranked ahead of time. Marked "(inactive)"
+  // so it's clear a pick like that won't actually apply to a generated
+  // schedule until they're flipped back to active.
+  const allWorkers = sortedByName(roster);
   const grid = document.getElementById("zoneGrid");
   grid.innerHTML = AE.ZONE_DEFS.map(zone => {
     const isDept = zone.department === "dairy" || zone.department === "frozen";
     const slots = slotsFor(zone.id);
     const rowsHtml = slots.map((workerId, i) => {
-      const optionsHtml = active.map(w =>
-        `<option value="${w.id}" ${w.id === workerId ? "selected" : ""}>${w.name}${prefHint(w, zone.id)}</option>`
+      const optionsHtml = allWorkers.map(w =>
+        `<option value="${w.id}" ${w.id === workerId ? "selected" : ""}>${w.name}${w.active ? "" : " (inactive)"}${prefHint(w, zone.id)}</option>`
       ).join("");
       return `
         <div class="priority-row">
