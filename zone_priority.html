@@ -106,16 +106,65 @@
   .priority-rank.rank-1 { background: linear-gradient(135deg, var(--pref-2), var(--pref-2-dark)); color: #03262c; }
   .priority-rank.rank-2 { background: linear-gradient(135deg, var(--pref-3), var(--pref-3-dark)); color: #eef1ff; }
   .priority-rank.rank-3 { background: var(--panel-2); border: 1px solid var(--border); color: var(--text-dim); }
-  select.priority-select {
+  // Custom picker instead of a native <select> — iOS's own wheel picker
+  // (and several Android pickers) ignore inline color styling on <option>
+  // elements entirely, so the green/cyan/gray coding this screen relies on
+  // never showed up there. A plain HTML button + our own overlay list
+  // gives full control over how each row renders, same trick the bulk
+  // reassign checklist on Assignment/Schedule already uses.
+  .priority-picker-btn {
     flex: 1;
+    text-align: left;
     background: var(--panel-2);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 7px 8px;
+    padding: 8px 10px;
     border-radius: 6px;
     font-size: 13px;
     font-family: inherit;
   }
+  .priority-picker-btn.empty { color: var(--text-dim); font-style: italic; }
+  .priority-picker-btn.opt-green { color: var(--pref-1); }
+  .priority-picker-btn.opt-cyan { color: var(--pref-2); }
+  .priority-picker-btn.opt-gray { color: var(--text-dim); }
+
+  .overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 16px;
+    overflow-y: auto;
+    z-index: 50;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 380px;
+    padding: 22px 24px 24px;
+  }
+  .modal h2 { margin: 0 0 4px; font-size: 16px; }
+  .modal .modal-sub { color: var(--text-dim); font-size: 12px; margin-bottom: 16px; line-height: 1.5; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+  .picker-list { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+  .picker-row {
+    padding: 9px 12px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .picker-row:active { background: #262b36; }
+  .picker-row.opt-none { color: var(--text-dim); font-style: italic; }
+  .picker-row.opt-green { color: var(--pref-1); }
+  .picker-row.opt-cyan { color: var(--pref-2); }
+  .picker-row.opt-gray { color: var(--text-dim); }
 
   .status-msg { font-size: 12px; color: var(--green); }
   .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
@@ -149,6 +198,17 @@
 
   <div class="zone-grid" id="zoneGrid"></div>
 
+  <div class="overlay" id="pickerOverlay">
+    <div class="modal">
+      <h2 id="pickerTitle">Pick a worker</h2>
+      <div class="modal-sub">Green = active and already prefers this zone. Cyan = prefers it but currently inactive. Gray = inactive, no preference here.</div>
+      <div class="picker-list" id="pickerList"></div>
+      <div class="modal-actions">
+        <button type="button" id="btnPickerCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 const AE = window.AssignmentEngine;
 const ROSTER_KEY = "aisleScheduler_workerRoster_v1";
@@ -156,6 +216,7 @@ const ZONE_PRIORITY_KEY = "aisleScheduler_zonePriority_v1";
 const PRIORITY_SLOTS = AE.MAX_ZONE_PRIORITY_SLOTS || 4;
 
 let roster = [];
+let rosterById = {};
 let zonePriority = {}; // { [zoneId]: [workerId, ...] }, holes allowed (unranked slots are omitted, not null-padded, on save)
 
 function loadRoster() {
@@ -187,16 +248,16 @@ function sortedByName(list) {
   return [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
-// Color instead of text — same info (who already wants this zone, who's
-// active) without the label clutter. Green = active and prefers this
-// zone. Cyan = prefers this zone but currently inactive (won't actually
-// apply until they're flipped back to active). Gray = inactive with no
-// stated preference here. Plain default text = active, no preference.
-function optionStyle(worker, zoneId) {
+// A CSS class instead of inline text — same info (who already wants this
+// zone, who's active) without label clutter. Green = active and prefers
+// this zone. Cyan = prefers this zone but currently inactive (won't
+// actually apply until they're flipped back to active). Gray = inactive
+// with no stated preference here. No class = active, no preference.
+function optionClass(worker, zoneId) {
   const prefers = worker.preferredZones.includes(zoneId);
-  if (worker.active && prefers) return "color: var(--pref-1);";
-  if (!worker.active && prefers) return "color: var(--pref-2);";
-  if (!worker.active) return "color: var(--text-dim);";
+  if (worker.active && prefers) return "opt-green";
+  if (!worker.active && prefers) return "opt-cyan";
+  if (!worker.active) return "opt-gray";
   return "";
 }
 
@@ -235,24 +296,20 @@ function render() {
   // Worker Roster's own table: this is a standing config, not tied to any
   // one night, so someone who's inactive right now (or between shifts)
   // still needs to show up to be ranked ahead of time. Active/inactive and
-  // preference are both conveyed by color (optionStyle) instead of label
+  // preference are both conveyed by color (optionClass) instead of label
   // text, so an inactive pick isn't hidden — just visibly grayed.
-  const allWorkers = sortedByName(roster);
   const grid = document.getElementById("zoneGrid");
   grid.innerHTML = AE.ZONE_DEFS.map(zone => {
     const isDept = zone.department === "dairy" || zone.department === "frozen";
     const slots = slotsFor(zone.id);
     const rowsHtml = slots.map((workerId, i) => {
-      const optionsHtml = allWorkers.map(w =>
-        `<option value="${w.id}" style="${optionStyle(w, zone.id)}" ${w.id === workerId ? "selected" : ""}>${w.name}</option>`
-      ).join("");
+      const w = workerId ? rosterById[workerId] : null;
+      const label = w ? w.name : "— none —";
+      const cls = w ? optionClass(w, zone.id) : "empty";
       return `
         <div class="priority-row">
           <span class="priority-rank rank-${i}">${i + 1}</span>
-          <select class="priority-select" data-zone-id="${zone.id}" data-slot="${i}">
-            <option value="">— none —</option>
-            ${optionsHtml}
-          </select>
+          <button type="button" class="priority-picker-btn ${cls}" data-zone-id="${zone.id}" data-slot="${i}">${label}</button>
         </div>
       `;
     }).join("");
@@ -268,23 +325,66 @@ function render() {
     `;
   }).join("");
 
-  grid.querySelectorAll("select.priority-select").forEach(sel => {
-    sel.addEventListener("change", () => {
-      setSlot(sel.dataset.zoneId, parseInt(sel.dataset.slot, 10), sel.value);
-      render();
-    });
+  grid.querySelectorAll(".priority-picker-btn").forEach(btn => {
+    btn.addEventListener("click", () => openPickerModal(btn.dataset.zoneId, parseInt(btn.dataset.slot, 10)));
   });
   grid.querySelectorAll("[data-clear-zone]").forEach(btn => {
     btn.addEventListener("click", () => clearZone(btn.dataset.clearZone));
   });
 }
 
+// ---------------------------------------------------------------------------
+// Picker modal — tapping a slot button opens this instead of a native
+// <select>, so the green/cyan/gray coding actually renders on every phone.
+// ---------------------------------------------------------------------------
+let pickerZoneId = null;
+let pickerSlot = null;
+
+function openPickerModal(zoneId, slotIdx) {
+  const zone = AE.ZONE_DEFS.find(z => z.id === zoneId);
+  if (!zone) return;
+  pickerZoneId = zoneId;
+  pickerSlot = slotIdx;
+  document.getElementById("pickerTitle").textContent = `${AE.zoneLabel(zone)} — priority ${slotIdx + 1}`;
+
+  const list = document.getElementById("pickerList");
+  const rowsHtml = sortedByName(roster).map(w =>
+    `<div class="picker-row ${optionClass(w, zoneId)}" data-worker-id="${w.id}">${w.name}${w.active ? "" : " (inactive)"}</div>`
+  ).join("");
+  list.innerHTML = `<div class="picker-row opt-none" data-worker-id="">— none —</div>${rowsHtml}`;
+
+  list.querySelectorAll("[data-worker-id]").forEach(row => {
+    row.addEventListener("click", () => {
+      setSlot(pickerZoneId, pickerSlot, row.dataset.workerId || null);
+      closePickerModal();
+      render();
+    });
+  });
+
+  document.getElementById("pickerOverlay").classList.add("show");
+}
+
+function closePickerModal() {
+  pickerZoneId = null;
+  pickerSlot = null;
+  document.getElementById("pickerOverlay").classList.remove("show");
+}
+
+function initPickerModal() {
+  document.getElementById("btnPickerCancel").addEventListener("click", closePickerModal);
+  document.getElementById("pickerOverlay").addEventListener("click", e => {
+    if (e.target.id === "pickerOverlay") closePickerModal();
+  });
+}
+
 function load() {
   roster = loadRoster();
+  rosterById = Object.fromEntries(roster.map(w => [w.id, w]));
   zonePriority = loadZonePriority();
   render();
 }
 
+initPickerModal();
 load();
 
 if ("serviceWorker" in navigator) {
