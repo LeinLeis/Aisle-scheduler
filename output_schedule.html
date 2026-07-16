@@ -127,6 +127,14 @@
   }
   .zone-row-head .zone-name { font-size: 15px; font-weight: 700; }
   .zone-row-head .zone-meta { font-size: 11.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+  .bulk-assign-btn {
+    font-size: 11.5px;
+    padding: 4px 10px;
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
+  }
+  .bulk-assign-btn:hover { background: #182036; }
   .worker-names { font-size: 14px; line-height: 1.7; margin-bottom: 8px; }
   .worker-names .empty-hint { color: var(--text-dim); font-style: italic; font-size: 13px; }
   .worker-tag {
@@ -275,6 +283,36 @@
   .checklist-item.overdue { border-color: var(--red); }
   .checklist-item.overdue .cl-meta { color: var(--red); font-weight: 600; }
 
+  .overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 16px;
+    overflow-y: auto;
+    z-index: 50;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 420px;
+    padding: 22px 24px 24px;
+  }
+  .modal h2 { margin: 0 0 4px; font-size: 16px; }
+  .modal .modal-sub { color: var(--text-dim); font-size: 12px; margin-bottom: 16px; line-height: 1.5; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+  /* Bulk-assign checklist — worker rows are just .checklist-item reused,
+     plus a small tag showing where each worker currently sits so it's
+     obvious at a glance who's actually moving vs. already here. */
+  .bulk-assign-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .bulk-assign-list .checklist-item { cursor: pointer; }
+  .bulk-assign-list .cl-meta.here { color: var(--green); }
+
   @media print {
     body { background: #fff; color: #000; padding: 10px; }
     .nav-row, .meta-bar .actions, button, .no-print { display: none !important; }
@@ -328,6 +366,18 @@
     <div class="panel" id="unassignedPanel">
       <h3>Not Assigned Tonight</h3>
       <div id="unassignedList" class="worker-names"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="bulkAssignOverlay">
+    <div class="modal">
+      <h2 id="bulkAssignTitle">Assign Workers</h2>
+      <div class="modal-sub">Check everyone who should be in this zone. Checking someone already elsewhere moves them here; unchecking someone here sends them back to Not Assigned Tonight.</div>
+      <div class="bulk-assign-list" id="bulkAssignList"></div>
+      <div class="modal-actions">
+        <button type="button" id="btnBulkAssignCancel">Cancel</button>
+        <button type="button" class="primary" id="btnBulkAssignApply">Apply</button>
+      </div>
     </div>
   </div>
 
@@ -675,6 +725,7 @@ function renderZoneList() {
       <div class="zone-row-head">
         <span class="zone-name">${AE.zoneLabel(zone)}</span>
         <span class="zone-meta">${zone.department}${zone.estimationMethod === "case_rate" ? ` · ${zone.caseCount} cases` : ""} · ${a.workerIds.length} assigned</span>
+        <button type="button" class="bulk-assign-btn" data-zone-id="${zone.id}">☑ Assign Workers</button>
       </div>
       <div class="worker-names">${namesHtml}</div>
       <div class="time-compare">
@@ -856,6 +907,7 @@ function renderAll() {
   wireActualTimeInputs();
   wireZoneDoneButtons();
   wireFlagTags();
+  wireBulkAssignButtons();
   updateSelectionUI(); // re-apply selected/tap-target classes to the freshly-rendered elements
 }
 
@@ -884,21 +936,37 @@ function getShiftStart(now) {
   return start;
 }
 
-function computeShiftBreakdown(now) {
-  const start = getShiftStart(now);
+// sinceOverride lets a stacked/sequential zone's clock start somewhere
+// other than the fixed 10:20pm shift start (see effectiveStartFor below) —
+// e.g. when the same crew already finished an earlier zone tonight, so
+// this zone's elapsed time shouldn't double-count the time already spent
+// on that first one. Break math still anchors to the REAL shift start
+// (shiftStart) no matter what, purely to figure out which calendar day
+// midnight/2am/5am land on — only the elapsed-time starting line and which
+// portion of each break falls after it move with sinceOverride.
+function computeShiftBreakdown(now, sinceOverride) {
+  const shiftStart = getShiftStart(now);
+  const start = sinceOverride || shiftStart;
   const rawMinutes = Math.max(0, (now - start) / 60000);
 
   const breakDetails = SHIFT_BREAKS.map(b => {
-    const breakStart = new Date(start);
+    const breakStart = new Date(shiftStart);
     // Breaks (midnight/2am/5am) fall on the calendar day after the shift
     // started (10:20pm), since start's own date's midnight/2am/5am already
     // passed hours before the shift began.
-    breakStart.setDate(start.getDate() + 1);
+    breakStart.setDate(shiftStart.getDate() + 1);
     breakStart.setHours(b.hour, b.minute, 0, 0);
     const breakEnd = new Date(breakStart.getTime() + b.durationMin * 60000);
+    // Only the slice of the break that falls after this clock's own start
+    // counts here — a break that already happened before a stacked zone's
+    // effective start was already "used up" by the first zone's clock, so
+    // deducting it again here would double-subtract it.
+    const windowStart = start > breakStart ? start : breakStart;
     let deducted = 0;
-    if (now >= breakEnd) deducted = b.durationMin;
-    else if (now > breakStart) deducted = (now - breakStart) / 60000;
+    if (now > windowStart) {
+      const windowEnd = now < breakEnd ? now : breakEnd;
+      deducted = Math.max(0, (windowEnd - windowStart) / 60000);
+    }
     return { label: b.label, durationMin: b.durationMin, deducted, applied: deducted > 0 };
   });
 
@@ -912,6 +980,33 @@ function computeShiftBreakdown(now) {
     netHours: netMinutes / 60,
     breakDetails,
   };
+}
+
+// A stacked/sequential zone (one sharing crew with another zone worked
+// earlier the same night) shouldn't have its elapsed time computed from
+// the fixed 10:20pm shift start — that double-counts whatever time the
+// crew already spent on the first zone. Instead, if this zone's crew
+// overlaps with another zone that's already been marked Done tonight, its
+// clock starts 30 minutes after that other zone's doneAt (a changeover
+// buffer), same as Dan's own two suggested options collapse into one rule:
+// each stacked zone gets its own start time, 30 minutes after the prior
+// one finished. If a crew is shared across more than one already-finished
+// zone, the LATEST doneAt wins — that's the most recent handoff.
+const STACK_CHANGEOVER_MIN = 30;
+
+function effectiveStartFor(zoneId, now) {
+  const group = (assignments[zoneId] && assignments[zoneId].workerIds) || [];
+  if (!group.length) return getShiftStart(now);
+  let latestHandoff = null;
+  for (const [otherZid, otherA] of Object.entries(assignments)) {
+    if (otherZid === zoneId || !otherA.doneAt) continue;
+    const shared = (otherA.workerIds || []).some(id => group.includes(id));
+    if (!shared) continue;
+    const doneAt = new Date(otherA.doneAt);
+    if (!latestHandoff || doneAt > latestHandoff) latestHandoff = doneAt;
+  }
+  if (!latestHandoff) return getShiftStart(now);
+  return new Date(latestHandoff.getTime() + STACK_CHANGEOVER_MIN * 60000);
 }
 
 function formatClock(d) {
@@ -955,7 +1050,8 @@ function markZoneDone(zoneId) {
   // moment it actually finishes" real-time workflow this button was
   // originally built for).
   if (a.actualHours == null) {
-    const b = computeShiftBreakdown(now);
+    const since = effectiveStartFor(zoneId, now);
+    const b = computeShiftBreakdown(now, since);
     a.actualHours = Math.round(b.netHours * 100) / 100;
   }
   a.doneAt = now.toISOString();
@@ -1153,6 +1249,105 @@ function addWorkerToScheduleZone(workerId, toZone) {
   const status = document.getElementById("statusMsg");
   status.textContent = "Saved";
   setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+// ---------------------------------------------------------------------------
+// Bulk assign — tap "☑ Assign Workers" on a zone to get a checklist of
+// tonight's whole crew (not just whoever's currently unassigned), each
+// showing where they sit right now, and multi-select who belongs in this
+// zone in one pass. Much faster than tap-to-move's one-worker-at-a-time
+// flow when reshuffling several people at once. Checking someone pulls
+// them out of wherever else they were (mirrors moveWorkerOnSchedule);
+// unchecking someone already here sends them back to Not Assigned Tonight.
+// ---------------------------------------------------------------------------
+let bulkAssignZoneId = null;
+
+function openBulkAssignModal(zoneId) {
+  const zone = zoneById[zoneId];
+  const a = assignments[zoneId];
+  if (!zone || !a) return;
+  bulkAssignZoneId = zoneId;
+  document.getElementById("bulkAssignTitle").textContent = `Assign Workers — ${AE.zoneLabel(zone)}`;
+
+  const workingIds = Array.isArray(finalized.workingIds) ? new Set(finalized.workingIds) : null;
+  const candidates = sortedByName(roster.filter(w => w.active && (!workingIds || workingIds.has(w.id))));
+  const inThisZone = new Set(a.workerIds || []);
+
+  const list = document.getElementById("bulkAssignList");
+  list.innerHTML = candidates.map(w => {
+    const here = inThisZone.has(w.id);
+    const elsewhere = zonesContaining(w.id).filter(zid => zid !== zoneId);
+    const metaText = here ? "here" : elsewhere.length ? elsewhere.map(zid => (zoneById[zid] ? AE.zoneLabel(zoneById[zid]) : zid)).join(", ") : "unassigned";
+    return `
+      <label class="checklist-item">
+        <input type="checkbox" data-worker-id="${w.id}" ${here ? "checked" : ""}>
+        <span class="cl-label"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>
+        <span class="cl-meta${here ? " here" : ""}">${metaText}</span>
+      </label>
+    `;
+  }).join("");
+
+  document.getElementById("bulkAssignOverlay").classList.add("show");
+}
+
+function closeBulkAssignModal() {
+  bulkAssignZoneId = null;
+  document.getElementById("bulkAssignOverlay").classList.remove("show");
+}
+
+function applyBulkAssign() {
+  const zoneId = bulkAssignZoneId;
+  const a = assignments[zoneId];
+  if (!zoneId || !a) { closeBulkAssignModal(); return; }
+
+  const checked = new Set(
+    Array.from(document.querySelectorAll('#bulkAssignList input[type="checkbox"]:checked')).map(cb => cb.dataset.workerId)
+  );
+  const wasHere = new Set(a.workerIds || []);
+
+  checked.forEach(id => {
+    if (wasHere.has(id)) return;
+    const fromZones = zonesContaining(id).filter(zid => zid !== zoneId);
+    fromZones.forEach(zid => {
+      const idx = assignments[zid].workerIds.indexOf(id);
+      if (idx >= 0) assignments[zid].workerIds.splice(idx, 1);
+      recomputeScheduleZone(zid);
+    });
+    a.workerIds.push(id);
+  });
+  wasHere.forEach(id => {
+    if (checked.has(id)) return;
+    const idx = a.workerIds.indexOf(id);
+    if (idx >= 0) a.workerIds.splice(idx, 1);
+  });
+  recomputeScheduleZone(zoneId);
+
+  closeBulkAssignModal();
+  persist();
+  renderAll();
+  const status = document.getElementById("statusMsg");
+  status.textContent = "Saved";
+  setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+function wireBulkAssignButtons() {
+  document.querySelectorAll(".bulk-assign-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      // Stop this from also bubbling up to initTapToMove's document
+      // listener, which would otherwise read it as a tap on the zone row
+      // and complete/cancel whatever tap-to-move is in progress.
+      e.stopPropagation();
+      openBulkAssignModal(btn.dataset.zoneId);
+    });
+  });
+}
+
+function initBulkAssignModal() {
+  document.getElementById("btnBulkAssignCancel").addEventListener("click", closeBulkAssignModal);
+  document.getElementById("btnBulkAssignApply").addEventListener("click", applyBulkAssign);
+  document.getElementById("bulkAssignOverlay").addEventListener("click", e => {
+    if (e.target.id === "bulkAssignOverlay") closeBulkAssignModal();
+  });
 }
 
 let selectedWorkerId = null;
@@ -1403,6 +1598,7 @@ function initBubbleLongPress() {
 
 initBubbleLongPress();
 initTapToMove();
+initBulkAssignModal();
 
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
 
