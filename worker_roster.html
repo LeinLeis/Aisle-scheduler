@@ -290,6 +290,7 @@
     <a class="navlink active" href="worker_roster.html">Worker Roster</a>
     <a class="navlink" href="review_correct.html">Assignment</a>
     <a class="navlink" href="output_schedule.html">Output Schedule</a>
+    <a class="navlink" href="zone_priority.html">Zone Priority</a>
   </div>
 
   <div class="toolbar">
@@ -303,8 +304,8 @@
   </div>
 
   <div class="toolbar" style="margin-top:-6px;">
-    <button id="btnBackupAll" title="Everything saved in this browser — roster, performance history, tonight's crew, and any in-progress or finalized schedule. Use this to protect against losing a phone or clearing browser data.">💾 Back Up Everything</button>
-    <button id="btnRestoreAll" class="danger" title="Restores from a Back Up Everything file — overwrites everything currently saved in this browser.">♻️ Restore Everything</button>
+    <button id="btnBackupAll" title="Everything saved in this browser — roster, performance history, tonight's crew, zone priority, and any in-progress or finalized schedule. On a phone this opens the share sheet (AirDrop, Messages, Drive...) so you can send it straight to another device — also doubles as a backup against losing a phone or clearing browser data.">📤 Back Up / Send to Device</button>
+    <button id="btnRestoreAll" class="danger" title="Loads a Back Up / Send file — overwrites everything currently saved in this browser. Use this on the OTHER device after sending a backup to it.">♻️ Restore Everything</button>
     <input type="file" id="fileRestoreAll" accept="application/json">
   </div>
 
@@ -1475,21 +1476,60 @@ const ALL_STORAGE_KEYS = [
   "aisleScheduler_workerPerformanceHistory_v1",
   "aisleScheduler_tonightCrew_v1",
   "aisleScheduler_waterPalletTypes_v1",
+  "aisleScheduler_zonePriority_v1",
 ];
 
-function backupEverything() {
+function buildBackupPayload() {
   const data = {};
   ALL_STORAGE_KEYS.forEach(key => {
     const raw = localStorage.getItem(key);
     if (raw == null) return;
     try { data[key] = JSON.parse(raw); } catch (e) { data[key] = raw; }
   });
-  const payload = { type: "aisle-scheduler-full-backup", version: 1, exportedAt: new Date().toISOString(), data };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  return { type: "aisle-scheduler-full-backup", version: 1, exportedAt: new Date().toISOString(), data };
+}
+
+function backupFileName() {
+  return `aisle-scheduler-backup-${new Date().toISOString().slice(0, 10)}.json`;
+}
+
+// Doubles as the phone-to-phone sync button: on a device that supports
+// sharing files (basically every modern phone), this hands the export
+// straight to the native share sheet — AirDrop it to your other iPhone,
+// send it to yourself in Messages, drop it in Drive, whatever's fastest —
+// instead of quietly saving to Downloads and making you go dig it out and
+// move it by hand. Falls back to a plain file download wherever Web
+// Share-with-files isn't supported (most desktop browsers).
+async function backupEverything() {
+  const payload = buildBackupPayload();
+  const json = JSON.stringify(payload, null, 2);
+  const filename = backupFileName();
+
+  if (navigator.canShare && navigator.share) {
+    const file = new File([json], filename, { type: "application/json" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: "Aisle Scheduler backup",
+          text: `Aisle Scheduler data exported ${new Date().toLocaleString()}`,
+        });
+        return;
+      } catch (e) {
+        // AbortError = the user backed out of the share sheet on purpose —
+        // respect that and stop, rather than also forcing a download they
+        // didn't ask for. Any other failure falls through to the download
+        // below so the button still does something useful.
+        if (e && e.name === "AbortError") return;
+      }
+    }
+  }
+
+  const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `aisle-scheduler-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -1945,6 +1985,7 @@ if ("serviceWorker" in navigator) {
     { file: "worker_roster.html", label: "Roster" },
     { file: "review_correct.html", label: "Assignment" },
     { file: "output_schedule.html", label: "Schedule" },
+    { file: "zone_priority.html", label: "Priority" },
   ];
   const here = location.pathname.split("/").pop() || "worker_roster.html";
   const idx = PAGES.findIndex(p => p.file === here);
