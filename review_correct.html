@@ -190,9 +190,33 @@
   .zone-card.dept { border-color: #2b4030; }
   .zone-card.dragover { border-color: var(--accent); background: #182036; }
   .zone-card.understaffed { border-color: var(--red); }
-  .zone-card .zone-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .zone-card .zone-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px; margin-bottom: 6px; }
   .zone-card .zone-name { font-weight: 700; font-size: 13px; }
   .zone-card .zone-meta { font-size: 11px; color: var(--text-dim); }
+  .bulk-assign-btn {
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
+  }
+  .bulk-assign-btn:hover { background: #182036; }
+  .bulk-assign-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .checklist-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
+  .checklist-item .cl-label { flex: 1; display: flex; align-items: center; gap: 6px; }
+  .checklist-item .cl-meta { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+  .checklist-item .cl-meta.here { color: var(--green); }
   .zone-card .zone-stats { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
   .zone-card .zone-stats b { color: var(--text); }
   .time-compare {
@@ -485,6 +509,20 @@
       <div class="modal-actions">
         <button id="btnCasePhotoCancel">Cancel</button>
         <button class="primary" id="btnCasePhotoApply" style="display:none;">Apply to Case Counts</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk-assign checklist — tap "Assign" on a zone to multi-select who
+       belongs there in one pass, instead of moving people one at a time. -->
+  <div class="overlay" id="bulkAssignOverlay">
+    <div class="modal" style="max-width:420px;">
+      <h2 id="bulkAssignTitle">Assign Workers</h2>
+      <div class="modal-sub">Check everyone who should be in this zone. Checking someone already elsewhere moves them here; unchecking someone here sends them back to Unassigned Tonight.</div>
+      <div class="bulk-assign-list" id="bulkAssignList"></div>
+      <div class="modal-actions">
+        <button type="button" id="btnBulkAssignCancel">Cancel</button>
+        <button type="button" class="primary" id="btnBulkAssignApply">Apply</button>
       </div>
     </div>
   </div>
@@ -1717,6 +1755,7 @@ function renderBoard() {
       <div class="zone-head">
         <span class="zone-name">${AE.zoneLabel(zone)}</span>
         <span class="zone-meta">${zone.department}</span>
+        <button type="button" class="bulk-assign-btn" data-zone-id="${zone.id}">☑ Assign</button>
       </div>
       <div class="zone-stats">
         <b>${a.workerIds.length}</b> of target <b>${target}</b>
@@ -1741,6 +1780,7 @@ function renderBoard() {
   updateSelectionUI();
   wireActualTimeInputs();
   wireFlagTags();
+  wireBulkAssignButtons();
 }
 
 function wireActualTimeInputs() {
@@ -1934,6 +1974,100 @@ function addWorkerToZone(workerId, toZone) {
     recomputeZone(toZone);
   }
   afterChange();
+}
+
+// ---------------------------------------------------------------------------
+// Bulk assign — tap "☑ Assign" on a zone card to get a checklist of
+// tonight's whole crew, each showing where they sit right now, and
+// multi-select who belongs in this zone in one pass. Much faster than
+// tap-to-move/drag-and-drop's one-worker-at-a-time flow when building or
+// reshuffling a zone from scratch. Checking someone pulls them out of
+// wherever else they were (mirrors moveWorker); unchecking someone already
+// here sends them back to Unassigned Tonight.
+// ---------------------------------------------------------------------------
+let bulkAssignZoneId = null;
+
+function openBulkAssignModal(zoneId) {
+  const zone = zoneById[zoneId];
+  const a = assignments[zoneId];
+  if (!zone || !a) return;
+  bulkAssignZoneId = zoneId;
+  document.getElementById("bulkAssignTitle").textContent = `Assign Workers — ${AE.zoneLabel(zone)}`;
+
+  const candidates = sortedByName(roster.filter(w => w.active && tonightCrewIds.has(w.id)));
+  const inThisZone = new Set(a.workerIds || []);
+
+  const list = document.getElementById("bulkAssignList");
+  list.innerHTML = candidates.map(w => {
+    const here = inThisZone.has(w.id);
+    const elsewhere = zonesContaining(w.id).filter(zid => zid !== zoneId);
+    const metaText = here ? "here" : elsewhere.length ? elsewhere.map(zid => (zoneById[zid] ? AE.zoneLabel(zoneById[zid]) : zid)).join(", ") : "unassigned";
+    return `
+      <label class="checklist-item">
+        <input type="checkbox" data-worker-id="${w.id}" ${here ? "checked" : ""}>
+        <span class="cl-label"><span class="dot dot-${w.productionRating}"></span>${w.name}</span>
+        <span class="cl-meta${here ? " here" : ""}">${metaText}</span>
+      </label>
+    `;
+  }).join("");
+
+  document.getElementById("bulkAssignOverlay").classList.add("show");
+}
+
+function closeBulkAssignModal() {
+  bulkAssignZoneId = null;
+  document.getElementById("bulkAssignOverlay").classList.remove("show");
+}
+
+function applyBulkAssign() {
+  const zoneId = bulkAssignZoneId;
+  const a = assignments[zoneId];
+  if (!zoneId || !a) { closeBulkAssignModal(); return; }
+
+  const checked = new Set(
+    Array.from(document.querySelectorAll('#bulkAssignList input[type="checkbox"]:checked')).map(cb => cb.dataset.workerId)
+  );
+  const wasHere = new Set(a.workerIds || []);
+
+  checked.forEach(id => {
+    if (wasHere.has(id)) return;
+    const fromZones = zonesContaining(id).filter(zid => zid !== zoneId);
+    fromZones.forEach(zid => {
+      const idx = assignments[zid].workerIds.indexOf(id);
+      if (idx >= 0) assignments[zid].workerIds.splice(idx, 1);
+      recomputeZone(zid);
+    });
+    a.workerIds.push(id);
+  });
+  wasHere.forEach(id => {
+    if (checked.has(id)) return;
+    const idx = a.workerIds.indexOf(id);
+    if (idx >= 0) a.workerIds.splice(idx, 1);
+  });
+  recomputeZone(zoneId);
+
+  closeBulkAssignModal();
+  afterChange();
+}
+
+function wireBulkAssignButtons() {
+  document.querySelectorAll(".bulk-assign-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      // Stop this from also bubbling up to initTapToMove's document
+      // listener, which would otherwise read it as a tap on the zone card
+      // and complete/cancel whatever tap-to-move is in progress.
+      e.stopPropagation();
+      openBulkAssignModal(btn.dataset.zoneId);
+    });
+  });
+}
+
+function initBulkAssignModal() {
+  document.getElementById("btnBulkAssignCancel").addEventListener("click", closeBulkAssignModal);
+  document.getElementById("btnBulkAssignApply").addEventListener("click", applyBulkAssign);
+  document.getElementById("bulkAssignOverlay").addEventListener("click", e => {
+    if (e.target.id === "bulkAssignOverlay") closeBulkAssignModal();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2297,6 +2431,7 @@ renderWaterPalletPanel();
 refreshRosterState();
 initTapToMove();
 initChipLongPress();
+initBulkAssignModal();
 if (loadNightState()) {
   reconcileAssignmentsWithRoster();
   document.getElementById("resultsArea").style.display = "block";
