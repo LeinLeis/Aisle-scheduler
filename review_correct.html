@@ -202,6 +202,22 @@
   }
   .bulk-assign-btn:hover { background: #182036; }
   .bulk-assign-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .stack-zone-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .stack-zone-row .checkbox-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+  .stack-zone-row .checkbox-line input { width: auto; margin-top: 2px; flex-shrink: 0; }
+  .stack-zone-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; max-height: 35vh; overflow-y: auto; }
+  .stack-zone-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .stack-zone-item input { width: auto; flex-shrink: 0; }
   .checklist-item {
     display: flex;
     align-items: center;
@@ -525,6 +541,13 @@
       <h2 id="bulkAssignTitle">Assign Workers</h2>
       <div class="modal-sub">Check everyone who should be in this zone. Checking someone already elsewhere moves them here; unchecking someone here sends them back to Unassigned Tonight.</div>
       <div class="bulk-assign-list" id="bulkAssignList"></div>
+      <div class="stack-zone-row">
+        <label class="checkbox-line">
+          <input type="checkbox" id="bulkAssignStackToggle">
+          <span>Also stack this same group into other zones tonight — check as many as apply. They'll work all of them, one after another, instead of being moved out of this one.</span>
+        </label>
+        <div class="stack-zone-list" id="bulkAssignStackList" style="display:none;"></div>
+      </div>
       <div class="modal-actions">
         <button type="button" id="btnBulkAssignCancel">Cancel</button>
         <button type="button" class="primary" id="btnBulkAssignApply">Apply</button>
@@ -2030,6 +2053,24 @@ function openBulkAssignModal(zoneId) {
     `;
   }).join("");
 
+  // Reset the stack option every time the modal opens — it's a one-shot
+  // action for this Apply, not a sticky setting, and populate it with
+  // every OTHER zone so a group can be dropped straight into a second
+  // aisle for tonight without a separate trip back to this same modal.
+  const stackToggle = document.getElementById("bulkAssignStackToggle");
+  const stackList = document.getElementById("bulkAssignStackList");
+  stackToggle.checked = false;
+  stackList.style.display = "none";
+  stackList.innerHTML = zones
+    .filter(z => z.id !== zoneId)
+    .map(z => `
+      <label class="stack-zone-item">
+        <input type="checkbox" value="${z.id}">
+        <span>${AE.zoneLabel(z)}</span>
+      </label>
+    `)
+    .join("");
+
   document.getElementById("bulkAssignOverlay").classList.add("show");
 }
 
@@ -2065,6 +2106,26 @@ function applyBulkAssign() {
   });
   recomputeZone(zoneId);
 
+  // Stacking is purely additive — everyone just checked (whether newly
+  // moved in or already here) also gets added to every checked stack
+  // zone, WITHOUT touching their spot in this one or anywhere else. This
+  // is the whole point: a shorthanded crew can cover as many aisles as it
+  // takes in one pass instead of being ripped out of each prior one.
+  const stackToggle = document.getElementById("bulkAssignStackToggle");
+  if (stackToggle.checked) {
+    const stackZoneIds = Array.from(
+      document.querySelectorAll('#bulkAssignStackList input[type="checkbox"]:checked')
+    ).map(cb => cb.value);
+    stackZoneIds.forEach(stackZoneId => {
+      const stackAssignment = assignments[stackZoneId];
+      if (!stackAssignment) return;
+      checked.forEach(id => {
+        if (!stackAssignment.workerIds.includes(id)) stackAssignment.workerIds.push(id);
+      });
+      recomputeZone(stackZoneId);
+    });
+  }
+
   closeBulkAssignModal();
   afterChange();
 }
@@ -2086,6 +2147,9 @@ function initBulkAssignModal() {
   document.getElementById("btnBulkAssignApply").addEventListener("click", applyBulkAssign);
   document.getElementById("bulkAssignOverlay").addEventListener("click", e => {
     if (e.target.id === "bulkAssignOverlay") closeBulkAssignModal();
+  });
+  document.getElementById("bulkAssignStackToggle").addEventListener("change", e => {
+    document.getElementById("bulkAssignStackList").style.display = e.target.checked ? "flex" : "none";
   });
 }
 

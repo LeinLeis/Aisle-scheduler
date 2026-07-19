@@ -207,7 +207,7 @@
   .time-adjusted { border-bottom: 1px dotted var(--accent); color: var(--accent); }
   .time-actual { display: inline-flex; align-items: center; gap: 5px; }
   .actual-input {
-    width: 60px;
+    width: 110px;
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
@@ -216,6 +216,7 @@
     font-size: 13px;
     font-family: inherit;
   }
+  .actual-hours-computed { color: var(--text-dim); font-size: 11.5px; }
   .delta-tag { font-size: 11px; padding: 2px 7px; border-radius: 5px; font-weight: 600; }
   .delta-tag.over { background: #2a1a1a; color: #ff9b93; }
   .delta-tag.under { background: #16321e; color: #9fe6ac; }
@@ -310,6 +311,22 @@
      plus a small tag showing where each worker currently sits so it's
      obvious at a glance who's actually moving vs. already here. */
   .bulk-assign-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .stack-zone-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .stack-zone-row .checkbox-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+  .stack-zone-row .checkbox-line input { width: auto; margin-top: 2px; flex-shrink: 0; }
+  .stack-zone-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; max-height: 35vh; overflow-y: auto; }
+  .stack-zone-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .stack-zone-item input { width: auto; flex-shrink: 0; }
   .bulk-assign-list .checklist-item { cursor: pointer; }
   .bulk-assign-list .cl-meta.here { color: var(--green); }
   /* Same color language as the Zone Priority picker — green name text
@@ -379,6 +396,13 @@
       <h2 id="bulkAssignTitle">Assign Workers</h2>
       <div class="modal-sub">Check everyone who should be in this zone. Checking someone already elsewhere moves them here; unchecking someone here sends them back to Not Assigned Tonight.</div>
       <div class="bulk-assign-list" id="bulkAssignList"></div>
+      <div class="stack-zone-row">
+        <label class="checkbox-line">
+          <input type="checkbox" id="bulkAssignStackToggle">
+          <span>Also stack this same group into other zones tonight — check as many as apply. They'll work all of them, one after another, instead of being moved out of this one.</span>
+        </label>
+        <div class="stack-zone-list" id="bulkAssignStackList" style="display:none;"></div>
+      </div>
       <div class="modal-actions">
         <button type="button" id="btnBulkAssignCancel">Cancel</button>
         <button type="button" class="primary" id="btnBulkAssignApply">Apply</button>
@@ -737,8 +761,9 @@ function renderZoneList() {
         <div class="time-row">${estimateRowHtml}</div>
         <div class="time-row">
           <span class="time-actual">
-            Actual:
-            <input type="number" step="0.1" min="0" class="actual-input" data-zone-id="${zone.id}" value="${hasActual ? a.actualHours : ""}" placeholder="log after shift">h
+            Done at:
+            <input type="time" class="actual-input" data-zone-id="${zone.id}" value="${timeInputValue(a)}">
+            ${hasActual ? `<span class="actual-hours-computed">(${a.actualHours.toFixed(2)}h)</span>` : ""}
           </span>
           ${deltaHtml}
           <button type="button" class="${doneBtnClass}" data-zone-id="${zone.id}">${doneBtnLabel}</button>
@@ -856,23 +881,36 @@ function recordPerformanceSample(zoneId, actualHours) {
   savePerformanceHistory(history);
 }
 
+// Typing (or clearing) a completion time IS marking a zone done/undone —
+// no separate tap on the Done button needed. finishZone does the actual
+// hours math off the entered time instead of "right now," then handles
+// the performance sample, rating nudge, persist, and re-render, same as
+// pressing Done itself.
+function applyActualTimeInput(zoneId, timeStr) {
+  const a = assignments[zoneId];
+  if (!a) return;
+  if (!timeStr) {
+    // Cleared the field — back to "not done yet." Doesn't try to undo any
+    // rating nudge that already happened from a prior entry; there's no
+    // tracked "before" state to roll back to, same limitation the old
+    // manual-hours box always had.
+    a.actualHours = null;
+    a.doneAt = null;
+    delete zoneDoneNotes[zoneId];
+    persist();
+    renderAll();
+    return;
+  }
+  const completedAt = timeInputToDate(timeStr, new Date());
+  if (!completedAt) return;
+  finishZone(zoneId, completedAt);
+  saveAfterFinish();
+}
+
 function wireActualTimeInputs() {
   document.querySelectorAll(".actual-input").forEach(input => {
     input.addEventListener("change", () => {
-      const zid = input.dataset.zoneId;
-      const val = input.value.trim();
-      assignments[zid].actualHours = val === "" ? null : Math.max(0, parseFloat(val) || 0);
-      if (assignments[zid].actualHours != null) {
-        // Typing a real value in IS marking it done — no separate tap on
-        // the Done button needed. markZoneDone honors this value (see the
-        // a.actualHours == null check there) instead of recomputing it
-        // from the current wall-clock time, and handles the performance
-        // sample, rating nudge, persist, and re-render on its own.
-        markZoneDone(zid);
-      } else {
-        persist();
-        renderAll();
-      }
+      applyActualTimeInput(input.dataset.zoneId, input.value);
     });
   });
 }
@@ -1018,6 +1056,36 @@ function formatClock(d) {
   return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
 
+// Pre-fills the Done-at time field from whatever's already stored, so a
+// zone that's already done shows the time it finished instead of a blank
+// box every time the screen re-renders.
+function timeInputValue(a) {
+  if (!a.doneAt) return "";
+  const d = new Date(a.doneAt);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// A native time input hands back a plain 24-hour "HH:MM" with no date or
+// AM/PM attached — turn that into a real Date on the correct night. Same
+// day-boundary rule as every break time in computeShiftBreakdown: evening
+// hours (>= noon) belong to the shift-start's own calendar date, early
+// morning hours belong to the day after. referenceNow just anchors which
+// actual night this is (today vs. yesterday's overnight shift), the same
+// way getShiftStart already works everywhere else on this screen.
+function timeInputToDate(timeStr, referenceNow) {
+  if (!timeStr) return null;
+  const parts = timeStr.split(":");
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  const shiftStart = getShiftStart(referenceNow);
+  const d = new Date(shiftStart);
+  d.setDate(shiftStart.getDate() + (h >= 12 ? 0 : 1));
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
 function ratingLabel(r) {
   return { on_pace: "On Pace", needs_improvement: "Needs Improvement", new: "New" }[r] || r;
 }
@@ -1041,25 +1109,22 @@ let zoneDoneNotes = {};
 // swap between those, never spiral.
 const RATING_THRESHOLD = 0.15;
 
-function markZoneDone(zoneId) {
+// Shared by the Done button (completedAt = right now) and the Done-at time
+// field (completedAt = whatever clock time was typed in) — everything
+// past "here's the moment this zone actually finished" is identical:
+// compute net hours off the shift-break math, log the performance sample,
+// nudge ratings, and leave a note. One tap on Done is just a shortcut for
+// "the time is right now"; typing a time is for logging it after the fact
+// without doing the elapsed-time math by hand.
+function finishZone(zoneId, completedAt) {
   const zone = zoneById[zoneId];
   const a = assignments[zoneId];
   if (!zone || !a || !a.workerIds || !a.workerIds.length) return;
 
-  const now = new Date();
-  // Honor a manually-typed Actual value instead of clobbering it — Done
-  // used to always recompute actualHours from wall-clock elapsed shift
-  // time no matter what, which silently threw away whatever hours had
-  // just been typed into the Actual box. Only fall back to computing from
-  // elapsed time when nothing's been entered yet (the "press Done the
-  // moment it actually finishes" real-time workflow this button was
-  // originally built for).
-  if (a.actualHours == null) {
-    const since = effectiveStartFor(zoneId, now);
-    const b = computeShiftBreakdown(now, since);
-    a.actualHours = Math.round(b.netHours * 100) / 100;
-  }
-  a.doneAt = now.toISOString();
+  const since = effectiveStartFor(zoneId, completedAt);
+  const b = computeShiftBreakdown(completedAt, since);
+  a.actualHours = Math.round(b.netHours * 100) / 100;
+  a.doneAt = completedAt.toISOString();
   recordPerformanceSample(zoneId, a.actualHours);
 
   const deltaPct = a.workloadHours ? (a.actualHours - a.workloadHours) / a.workloadHours : 0;
@@ -1079,15 +1144,21 @@ function markZoneDone(zoneId) {
 
   const pctText = `${deltaPct >= 0 ? "+" : ""}${(deltaPct * 100).toFixed(0)}% vs adjusted`;
   zoneDoneNotes[zoneId] = changes.length
-    ? `Marked done at ${formatClock(now)} · ${a.actualHours.toFixed(2)}h actual (${pctText}). ${changes.join(" · ")}`
-    : `Marked done at ${formatClock(now)} · ${a.actualHours.toFixed(2)}h actual (${pctText}). No rating changes.`;
+    ? `Marked done at ${formatClock(completedAt)} · ${a.actualHours.toFixed(2)}h actual (${pctText}). ${changes.join(" · ")}`
+    : `Marked done at ${formatClock(completedAt)} · ${a.actualHours.toFixed(2)}h actual (${pctText}). No rating changes.`;
+}
 
+function saveAfterFinish() {
   persist();
   renderAll();
-
   const status = document.getElementById("statusMsg");
   status.textContent = "Saved";
   setTimeout(() => { if (status.textContent === "Saved") status.textContent = ""; }, 1500);
+}
+
+function markZoneDone(zoneId) {
+  finishZone(zoneId, new Date());
+  saveAfterFinish();
 }
 
 function wireZoneDoneButtons() {
@@ -1293,6 +1364,24 @@ function openBulkAssignModal(zoneId) {
     `;
   }).join("");
 
+  // Reset the stack option every time the modal opens — it's a one-shot
+  // action for this Apply, not a sticky setting, and populate it with
+  // every OTHER zone so a group can be dropped straight into a second
+  // aisle for tonight without a separate trip back to this same modal.
+  const stackToggle = document.getElementById("bulkAssignStackToggle");
+  const stackList = document.getElementById("bulkAssignStackList");
+  stackToggle.checked = false;
+  stackList.style.display = "none";
+  stackList.innerHTML = zones
+    .filter(z => z.id !== zoneId)
+    .map(z => `
+      <label class="stack-zone-item">
+        <input type="checkbox" value="${z.id}">
+        <span>${AE.zoneLabel(z)}</span>
+      </label>
+    `)
+    .join("");
+
   document.getElementById("bulkAssignOverlay").classList.add("show");
 }
 
@@ -1328,6 +1417,26 @@ function applyBulkAssign() {
   });
   recomputeScheduleZone(zoneId);
 
+  // Stacking is purely additive — everyone just checked (whether newly
+  // moved in or already here) also gets added to every checked stack
+  // zone, WITHOUT touching their spot in this one or anywhere else. This
+  // is the whole point: a shorthanded crew can cover as many aisles as it
+  // takes in one pass instead of being ripped out of each prior one.
+  const stackToggle = document.getElementById("bulkAssignStackToggle");
+  if (stackToggle.checked) {
+    const stackZoneIds = Array.from(
+      document.querySelectorAll('#bulkAssignStackList input[type="checkbox"]:checked')
+    ).map(cb => cb.value);
+    stackZoneIds.forEach(stackZoneId => {
+      const stackAssignment = assignments[stackZoneId];
+      if (!stackAssignment) return;
+      checked.forEach(id => {
+        if (!stackAssignment.workerIds.includes(id)) stackAssignment.workerIds.push(id);
+      });
+      recomputeScheduleZone(stackZoneId);
+    });
+  }
+
   closeBulkAssignModal();
   persist();
   renderAll();
@@ -1353,6 +1462,9 @@ function initBulkAssignModal() {
   document.getElementById("btnBulkAssignApply").addEventListener("click", applyBulkAssign);
   document.getElementById("bulkAssignOverlay").addEventListener("click", e => {
     if (e.target.id === "bulkAssignOverlay") closeBulkAssignModal();
+  });
+  document.getElementById("bulkAssignStackToggle").addEventListener("change", e => {
+    document.getElementById("bulkAssignStackList").style.display = e.target.checked ? "flex" : "none";
   });
 }
 
